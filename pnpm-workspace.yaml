@@ -3,6 +3,16 @@ packages:
   - "gui"
   - "!solarxr-protocol/lib/flatbuffers/**"
 
+allowBuilds:
+  '@parcel/watcher': set this to true or false
+  '@sentry/cli': set this to true or false
+  '@swc/core': set this to true or false
+  electron: set this to true or false
+  electron-winstaller: set this to true or false
+  esbuild: set this to true or false
+  register-scheme@https://codeload.github.com/devsnek/node-register-scheme/tar.gz/e7cc9a63a1f512565da44cb57316d9fb10750e17: set this to true or false
+  unrs-resolver: set this to true or false
+
 onlyBuiltDependencies:
   - '@parcel/watcher'
   - '@sentry/cli'

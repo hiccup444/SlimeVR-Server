@@ -1,10 +1,17 @@
 package dev.slimevr.tracking.processor
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.jme3.math.FastMath
 import dev.slimevr.VRServer
 import dev.slimevr.VRServer.Companion.getNextLocalTrackerId
 import dev.slimevr.autobone.errors.BodyProportionError
+import dev.slimevr.config.AdaptiveTrackingConfig
 import dev.slimevr.config.ConfigManager
+import dev.slimevr.tracking.processor.adaptive.AdaptiveBodyEstimator
+import dev.slimevr.tracking.processor.adaptive.AdaptivePoseSolver
+import dev.slimevr.tracking.processor.adaptive.AdaptiveTrackingTelemetry
+import dev.slimevr.tracking.processor.adaptive.OpportunisticArmCalibration
+import dev.slimevr.tracking.processor.adaptive.toRecord
 import dev.slimevr.tracking.processor.config.SkeletonConfigManager
 import dev.slimevr.tracking.processor.config.SkeletonConfigOffsets
 import dev.slimevr.tracking.processor.config.SkeletonConfigToggles
@@ -28,6 +35,13 @@ import kotlin.math.*
  * @param server the used VRServer
  */
 class HumanPoseManager(val server: VRServer?) {
+	val adaptiveTrackingConfig = server?.configManager?.vrConfig?.adaptiveTracking ?: AdaptiveTrackingConfig()
+	val adaptiveTelemetry = AdaptiveTrackingTelemetry(adaptiveTrackingConfig)
+	val adaptiveEstimator = AdaptiveBodyEstimator(adaptiveTrackingConfig)
+	val adaptivePoseSolver = AdaptivePoseSolver(adaptiveTrackingConfig)
+	val adaptiveArmCalibration = OpportunisticArmCalibration(this, adaptiveTrackingConfig)
+	private val adaptiveJsonMapper = ObjectMapper()
+	fun adaptiveDiagnosticsJson(): String? = adaptiveTelemetry.latestFrame?.let { adaptiveJsonMapper.writeValueAsString(it.toRecord()) }
 	val computedTrackers: MutableList<Tracker> = FastList()
 	private val onSkeletonUpdated: MutableList<Consumer<HumanSkeleton>> = FastList()
 	private val skeletonConfigManager = SkeletonConfigManager(true, this)
@@ -231,6 +245,7 @@ class HumanPoseManager(val server: VRServer?) {
 
 	@VRServerThread
 	fun updateSkeletonModelFromServer() {
+		adaptiveTelemetry.reset()
 		skeleton.setTrackersFromList(server!!.allTrackers)
 	}
 
@@ -270,6 +285,23 @@ class HumanPoseManager(val server: VRServer?) {
 	@VRServerThread
 	fun update() {
 		skeleton.updatePose()
+		if (server != null && (adaptiveTrackingConfig.telemetryEnabled || adaptiveTrackingConfig.liveDiagnosticsEnabled)) {
+			if (getPauseTracking()) {
+				adaptiveTelemetry.reset()
+			} else {
+				adaptiveTelemetry.update(
+					server.allTrackers,
+					computedTrackers,
+					driftDiagnostics = adaptiveEstimator.diagnostics,
+					poseSolver = adaptivePoseSolver,
+					armCalibration = adaptiveArmCalibration.diagnostic,
+					floorEstimate = skeleton.legTweaks.adaptiveFloorDiagnostic,
+					footContacts = mapOf("left" to skeleton.legTweaks.adaptiveLeftFoot.snapshot, "right" to skeleton.legTweaks.adaptiveRightFoot.snapshot),
+				)
+			}
+		} else {
+			adaptiveTelemetry.close()
+		}
 	}
 
 	/**

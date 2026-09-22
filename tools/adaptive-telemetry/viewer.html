@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive telemetry viewer</title>
+<style>
+:root { color-scheme: dark; --bg:#11151b; --panel:#1a2029; --line:#303a48; --text:#e7edf5; --muted:#9eabba; --accent:#74b9ff; }
+* { box-sizing:border-box; }
+body { margin:0; padding:24px; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
+main { max-width:1200px; margin:auto; }
+h1 { margin:0 0 4px; font-size:24px; }
+h2 { margin:0 0 12px; font-size:16px; }
+p { color:var(--muted); }
+.toolbar, .panel { border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:16px; margin-top:16px; }
+.toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+button, input[type=file] { font:inherit; }
+button { border:1px solid #4b6079; border-radius:5px; padding:6px 10px; color:var(--text); background:#263548; cursor:pointer; }
+button:disabled { opacity:.45; cursor:not-allowed; }
+label { color:var(--muted); }
+input[type=range] { min-width:260px; accent-color:var(--accent); }
+select { font:inherit; color:var(--text); background:#263548; border:1px solid #4b6079; border-radius:5px; padding:6px; }
+.notice { margin:12px 0 0; color:#ffd479; }
+.error { color:#ff8d8d; white-space:pre-wrap; }
+.meta { color:var(--muted); margin-left:auto; }
+canvas { width:100%; height:310px; display:block; background:#121820; border:1px solid var(--line); border-radius:5px; }
+.legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; color:var(--muted); }
+.legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; background:var(--c); }
+.table-wrap { overflow:auto; max-height:430px; }
+table { width:100%; border-collapse:collapse; min-width:760px; }
+th, td { text-align:left; border-bottom:1px solid var(--line); padding:7px 8px; vertical-align:top; }
+th { color:var(--muted); position:sticky; top:0; background:var(--panel); }
+code { color:#c5ddff; }
+.help { font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Adaptive telemetry viewer</h1>
+<p>Local JSONL playback for estimator diagnostics. Every chart and value here is telemetry, not measured drift.</p>
+<section class="toolbar" aria-label="File and playback controls">
+  <label for="file">Recording JSONL</label>
+  <input id="file" type="file" accept=".jsonl,.ndjson,.log,.txt,application/json">
+  <button id="play" type="button" disabled>Play</button>
+  <label for="frame">Frame <output id="frameLabel">0 / 0</output></label>
+  <input id="frame" type="range" min="0" max="0" value="0" disabled>
+  <label for="tracker">Tracker</label>
+  <select id="tracker" disabled><option value="">All trackers</option></select>
+  <span id="meta" class="meta">No recording loaded</span>
+</section>
+<p id="message" class="notice" role="status">Open a JSONL recording to begin.</p>
+<section class="panel">
+  <h2>Derived telemetry over time</h2>
+  <canvas id="plot" width="1100" height="310" aria-label="Telemetry plot"></canvas>
+  <div class="legend">
+    <span style="--c:#74b9ff">angular speed (rad/s)</span>
+    <span style="--c:#55efc4">linear speed (m/s)</span>
+    <span style="--c:#ffeaa7">temperature (C)</span>
+  </div>
+</section>
+<section class="panel">
+  <h2>Current frame</h2>
+  <div class="table-wrap"><table><thead><tr><th>Tracker</th><th>Angular speed</th><th>Linear speed</th><th>Temperature</th><th>Confidence</th><th>Confidence reasons</th><th>Raw rotation</th><th>Adjusted rotation</th><th>Status</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <h2>Foot contact diagnostics</h2>
+  <p>Backend contact telemetry only. Weight is contact weight before strength and does not represent applied displacement.</p>
+  <div class="table-wrap"><table><thead><tr><th>Foot</th><th>State</th><th>Constraint weight</th><th>Speed (m/s)</th><th>Angular speed (rad/s)</th><th>Plant position</th></tr></thead><tbody id="contacts"></tbody></table></div>
+</section>
+<section class="panel">
+  <h2>Drift and pose diagnostics</h2>
+  <div class="table-wrap"><table><thead><tr><th>Tracker ID</th><th>Bias (rad)</th><th>Error (rad)</th><th>Filtered error (rad)</th><th>Consistent (s)</th><th>Eligible</th><th>Reason</th><th>Context confidence</th><th>Learning gate</th><th>Gate reasons</th></tr></thead><tbody id="driftRows"></tbody></table></div>
+  <h2>Tracker prediction residuals</h2>
+  <p>Expected rotations can be conditioned on measured tracking and are not independent truth. The independent-constraint flag describes the backend evidence label only.</p>
+  <div class="table-wrap"><table><thead><tr><th>Tracker ID</th><th>Expected rotation</th><th>Measured rotation</th><th>Residual vector (rad)</th><th>Magnitude (rad)</th><th>Direction consistency</th><th>Continuous (s)</th><th>Independent constraint</th><th>Reason</th></tr></thead><tbody id="predictionRows"></tbody></table></div>
+  <p id="poseDiagnostic">Pose diagnostics unavailable in this recording.</p>
+  <p id="activityDiagnostic">Activity estimate unavailable in this recording.</p>
+  <p id="armConfidenceDiagnostic">Arm calibration confidence unavailable in this recording.</p>
+  <h2>Recorded final, baseline, and predicted pose positions</h2>
+  <p>Choose a front X/Y or top X/Z projection of computed final positions, the baseline after existing tracking corrections, and predicted pose. This is recorded telemetry, not raw IMU pose or a solver rerun.</p>
+  <label for="poseProjection">View</label>
+  <select id="poseProjection"><option value="front">Front (X/Y)</option><option value="top">Top (X/Z)</option></select>
+  <canvas id="posePlot" width="1100" height="310" aria-label="Pose diagnostic projection"></canvas>
+  <div class="legend"><span style="--c:#74b9ff">recorded final</span><span style="--c:#55efc4">baseline after tracking corrections</span><span style="--c:#ffeaa7">predicted pose</span><span style="--c:#ff7675">planted foot</span></div>
+</section>
+<section class="panel help">
+  <h2>Input format</h2>
+  <p>Recordings use a header line, then <code>{type:"frame", droppedFrames, frame:{timestampNanos, samples, computedSamples, resetEpoch, footContacts, trackerPredictions}}</code>. Samples contain <code>id</code>, <code>name</code>, <code>status</code>, raw and adjusted quaternion objects, optional position, temperatureCelsius, angularSpeedRadiansPerSecond, derivedLinearVelocity, and optional measurement-confidence diagnostics. Tracker predictions contain expected and measured rotations plus a shortest-arc residual vector, magnitude, directional consistency, duration, and evidence label. These expected rotations may be conditioned on measured tracking and are not independent truth. Drift residuals can include a contextual pose-confidence learning gate. Pose diagnostics report measurement confidence; older recordings labeled this <code>globalConfidence</code>. Foot contacts and activity fields are diagnostic estimates, not proven accuracy, raw IMU pose, or a solver rerun. A reset epoch or missing sample creates a visible gap.</p>
+</section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const MAX_BYTES = 128 * 1024 * 1024;
+  const MAX_FRAMES = 100000;
+  const fileInput = document.getElementById("file");
+  const frameInput = document.getElementById("frame");
+  const frameLabel = document.getElementById("frameLabel");
+  const trackerSelect = document.getElementById("tracker");
+  const playButton = document.getElementById("play");
+  const message = document.getElementById("message");
+  const meta = document.getElementById("meta");
+  const rows = document.getElementById("rows");
+  const contacts = document.getElementById("contacts");
+  const driftRows = document.getElementById("driftRows");
+  const predictionRows = document.getElementById("predictionRows");
+  const poseDiagnostic = document.getElementById("poseDiagnostic");
+  const activityDiagnostic = document.getElementById("activityDiagnostic");
+  const armConfidenceDiagnostic = document.getElementById("armConfidenceDiagnostic");
+  const canvas = document.getElementById("plot");
+  const ctx = canvas.getContext("2d");
+  const poseCanvas = document.getElementById("posePlot");
+  const poseCtx = poseCanvas.getContext("2d");
+  const poseProjectionSelect = document.getElementById("poseProjection");
+  let frames = [];
+  let current = 0;
+  let playing = false;
+  let playTimer = 0;
+  let poseProjection = "front";
+
+  function setMessage(text, error) {
+    message.textContent = text;
+    message.className = error ? "error" : "notice";
+  }
+  function number(value) { return typeof value === "number" && Number.isFinite(value) ? value : null; }
+  function vector(value) {
+    if (!value || [value.x,value.y,value.z].some(v=>number(v)===null)) return null;
+    return { x:value.x, y:value.y, z:value.z };
+  }
+  function projectPoint(value, projection) {
+    const point=vector(value);
+    if(!point)return null;
+    return { x:point.x, y:projection==="top" ? point.z : point.y };
+  }
+  function quat(value) {
+    if (!value || [value.x,value.y,value.z,value.w].some(v=>number(v)===null)) return null;
+    return { x:value.x, y:value.y, z:value.z, w:value.w };
+  }
+  function trackerList(frame) {
+    return [...(frame.samples || []).map(s=>({...s, group:"input"})), ...(frame.computedSamples || []).map(s=>({...s, group:"output"}))];
+  }
+  function timeOf(frame, index) {
+    const t=number(frame?.timestampNanos);
+    return t === null ? index : t * 1e-9;
+  }
+  function format(value, digits=3) { return value === null || value === undefined ? "-" : Number(value).toFixed(digits); }
+  function rotationText(value) {
+    const q=quat(value); return q ? `(${format(q.x)}, ${format(q.y)}, ${format(q.z)}, ${format(q.w)})` : "-";
+  }
+  function normalizeFrames(parsed) {
+    return parsed.map((envelope,index) => {
+      const raw=envelope.frame; const time=timeOf(raw,index); const trackers=trackerList(raw).map((source) => {
+        const id=source.group + ":" + String(source.id);
+        const rawRotation=source.rawRotation; const adjustedRotation=source.adjustedRotation;
+        const position=vector(source.position); const velocity=vector(source.derivedLinearVelocity);
+        const status=source.status == null ? null : String(source.status);
+        const confidence=source.confidence && typeof source.confidence === "object" ? { score:number(source.confidence.score), reasons:Array.isArray(source.confidence.reasons) ? source.confidence.reasons.map((reason)=>String(reason)) : [], observationSeconds:number(source.confidence.observationSeconds) } : null;
+        return { id, name:String(source.name ?? id), group:source.group, role:source.role == null ? null : String(source.role), rawRotation, adjustedRotation, position, angularSpeed:number(source.angularSpeedRadiansPerSecond), linearSpeed:velocity ? Math.hypot(velocity.x,velocity.y,velocity.z) : null, temperature:number(source.temperatureCelsius), confidence, status };
+      });
+      const trackerPredictions=raw.trackerPredictions && typeof raw.trackerPredictions === "object" && !Array.isArray(raw.trackerPredictions) ? raw.trackerPredictions : {};
+      return { time, resetEpoch:number(raw.resetEpoch) ?? 0, trackers, footContacts:raw.footContacts && typeof raw.footContacts === "object" ? raw.footContacts : null, driftDiagnostics:Array.isArray(raw.driftDiagnostics) ? raw.driftDiagnostics : [], poseDiagnostic:raw.poseDiagnostic && typeof raw.poseDiagnostic === "object" ? raw.poseDiagnostic : null, trackerPredictions, activity:raw.activity && typeof raw.activity === "object" ? raw.activity : null, armCalibration:raw.armCalibration && typeof raw.armCalibration === "object" ? raw.armCalibration : null, rawPose:raw.rawPose && typeof raw.rawPose === "object" ? raw.rawPose : null, predictedPose:raw.predictedPose && typeof raw.predictedPose === "object" ? raw.predictedPose : null, droppedFrames:number(envelope.droppedFrames) || 0 };
+    });
+  }
+  function clearRows() { while (rows.firstChild) rows.removeChild(rows.firstChild); }
+  function clearContacts() { while (contacts.firstChild) contacts.removeChild(contacts.firstChild); }
+  function clearDrift() { while (driftRows.firstChild) driftRows.removeChild(driftRows.firstChild); }
+  function clearPredictions() { while (predictionRows.firstChild) predictionRows.removeChild(predictionRows.firstChild); }
+  function updateTrackerSelector() {
+    while (trackerSelect.options.length > 0) trackerSelect.remove(0);
+    const byId=new Map(); for(const frame of frames) for(const tracker of frame.trackers) if(!byId.has(String(tracker.id))) byId.set(String(tracker.id),tracker.name);
+    for(const [id,name] of byId){const option=document.createElement("option");option.value=id;option.textContent=`${name} (#${id})`;trackerSelect.appendChild(option);}
+    trackerSelect.disabled=byId.size===0;
+  }
+  function addCell(row,text) { const cell=document.createElement("td"); cell.textContent=text; row.appendChild(cell); }
+  function renderTable(frame) {
+    clearRows();
+    for (const tracker of frame?.trackers || []) { if (selectedId() && String(tracker.id)!==selectedId()) continue; const row=document.createElement("tr"); const confidence=tracker.confidence; const reasons=confidence ? (confidence.reasons.length ? confidence.reasons.join(", ") : "-") : "-"; addCell(row,tracker.name); addCell(row,format(tracker.angularSpeed)); addCell(row,format(tracker.linearSpeed)); addCell(row,format(tracker.temperature,2)); addCell(row,confidence && confidence.score!==null ? `${format(confidence.score,3)} (${format(confidence.observationSeconds,1)} s)` : "-"); addCell(row,reasons); addCell(row,rotationText(tracker.rawRotation)); addCell(row,rotationText(tracker.adjustedRotation)); addCell(row,tracker.status ?? "-"); rows.appendChild(row); }
+  }
+  function renderContacts(frame) {
+    clearContacts();
+    for (const side of ["left", "right"]) {
+      const contact=frame?.footContacts?.[side]; const row=document.createElement("tr");
+      addCell(row,side);
+      if (!contact || typeof contact !== "object") { addCell(row,"unavailable"); addCell(row,"-"); addCell(row,"-"); addCell(row,"-"); addCell(row,"-"); contacts.appendChild(row); continue; }
+      addCell(row,contact.state == null ? "-" : String(contact.state));
+      addCell(row,format(number(contact.weight)));
+      addCell(row,format(number(contact.speedMetersPerSecond)));
+      addCell(row,format(number(contact.angularSpeedRadiansPerSecond)));
+      const plant=vector(contact.plantPosition); addCell(row,plant ? `(${format(plant.x)}, ${format(plant.y)}, ${format(plant.z)})` : "-");
+      contacts.appendChild(row);
+    }
+  }
+  function renderDiagnostics(frame) {
+    clearDrift();
+    for (const item of frame?.driftDiagnostics || []) {
+      if (!item || typeof item !== "object") continue;
+      const residual=item.residual && typeof item.residual === "object" ? item.residual : {};
+      const row=document.createElement("tr"); addCell(row,String(item.trackerId ?? "-")); addCell(row,format(number(item.biasRadians)));
+      addCell(row,format(number(residual.errorRadians))); addCell(row,format(number(residual.filteredErrorRadians)));
+      addCell(row,format(number(residual.consistentSeconds),1)); addCell(row,residual.eligibleForLearning === true ? "yes" : residual.eligibleForLearning === false ? "no" : "-");
+      addCell(row,residual.reason == null ? "-" : String(residual.reason));
+      const confidence=item.poseConfidence && typeof item.poseConfidence === "object" ? item.poseConfidence : null;
+      addCell(row,confidence ? format(number(confidence.score)) : "-");
+      addCell(row,confidence ? (confidence.learningEligible === true ? "eligible" : confidence.learningEligible === false ? "paused" : "unknown") : "-");
+      addCell(row,confidence && Array.isArray(confidence.reasons) ? confidence.reasons.filter(reason=>typeof reason==="string").join(", ") : "-");
+      driftRows.appendChild(row);
+    }
+    clearPredictions();
+    for(const [key,value] of Object.entries(frame?.trackerPredictions || {})) {
+      if(!value || typeof value!=="object" || Array.isArray(value)) continue;
+      const residual=value.residual && typeof value.residual==="object" && !Array.isArray(value.residual) ? value.residual : {};
+      const row=document.createElement("tr"); addCell(row,String(residual.trackerId ?? key)); addCell(row,rotationText(value.expectedRotation)); addCell(row,rotationText(value.measuredRotation));
+      const direction=vector(residual.residualVectorRadians); addCell(row,direction ? `(${format(direction.x)}, ${format(direction.y)}, ${format(direction.z)})` : "-");
+      addCell(row,format(number(residual.magnitudeRadians))); addCell(row,format(number(residual.directionalConsistency)));
+      addCell(row,format(number(residual.continuousSeconds),1)); addCell(row,residual.independentlyConstrained===true?"yes (solver-conditioned)":residual.independentlyConstrained===false?"no":"-");
+      addCell(row,residual.reason==null?"-":String(residual.reason)); predictionRows.appendChild(row);
+    }
+    const pose=frame?.poseDiagnostic;
+    const measurementConfidence=pose ? number(pose.measurementConfidence) ?? number(pose.globalConfidence) : null;
+    const confidenceLabel=pose && number(pose.measurementConfidence)===null && number(pose.globalConfidence)!==null ? "Legacy measurement confidence" : "Measurement confidence";
+    poseDiagnostic.textContent=pose ? `Initial error: ${format(number(pose.initialError))} | Final error: ${format(number(pose.finalError))} | Processing: ${format(number(pose.processingNanos),0)} ns | ${confidenceLabel}: ${format(measurementConfidence)}` : "Pose diagnostics unavailable in this recording.";
+    const activity=frame?.activity;
+    activityDiagnostic.textContent=activity ? `Activity: ${String(activity.state ?? "unknown")} | confidence ${format(number(activity.confidence))} | ${String(activity.reason ?? "no reason")} | candidate ${format(number(activity.candidateSeconds),1)} s` : "Activity estimate unavailable in this recording.";
+    const calibration=frame?.armCalibration;
+    const sides=calibration && Array.isArray(calibration.sides) ? calibration.sides.filter(side=>side&&typeof side==="object") : [];
+    armConfidenceDiagnostic.textContent=sides.length ? `Arm calibration evidence: ${sides.map(side=>{const confidence=side.poseConfidence&&typeof side.poseConfidence==="object"?side.poseConfidence:null;const reasons=confidence&&Array.isArray(confidence.reasons)?confidence.reasons.filter(reason=>typeof reason==="string").join(", "):"";return `${String(side.side??"?")} ${confidence?`${format(number(confidence.score))} (${confidence.learningEligible===true?"eligible":"paused"}) ${reasons}`:"confidence unknown"}`;}).join(" | ")}` : "Arm calibration confidence unavailable in this recording.";
+    drawPose(frame);
+  }
+  function drawPose(frame) {
+    const w=poseCanvas.width,h=poseCanvas.height,pad=35; poseCtx.clearRect(0,0,w,h); poseCtx.fillStyle="#121820"; poseCtx.fillRect(0,0,w,h);
+    const recorded={}; for(const tracker of frame?.trackers || []) if(tracker.group==="output" && tracker.position) recorded[tracker.role || tracker.name]=tracker.position;
+    const projectGroup=(group)=>Object.fromEntries(Object.entries(group).map(([name,value])=>[name,projectPoint(value,poseProjection)]).filter(([,point])=>point));
+    const groups=[recorded,frame?.rawPose || {},frame?.predictedPose || {}].map(projectGroup);
+    const mapPoints=groups.flatMap(group=>Object.values(group));
+    const feet=[frame?.footContacts?.left,frame?.footContacts?.right].filter(c=>c?.state==="PLANTED").map(c=>projectPoint(c.plantPosition,poseProjection)).filter(Boolean);
+    const points=[...mapPoints,...feet]; if(!points.length)return;
+    let minX=points[0].x,maxX=points[0].x,minY=points[0].y,maxY=points[0].y;
+    for(const p of points){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
+    const scale=Math.min((w-pad*2)/Math.max(0.01,maxX-minX),(h-pad*2)/Math.max(0.01,maxY-minY));
+    const canonical=(name)=>String(name).toUpperCase().replace(/[^A-Z0-9]/g,"").replace(/^TRACKERROLE/,"").replace(/^COMPUTED/,"");
+    const links=[["HEAD","NECK"],["NECK","UPPERCHEST"],["UPPERCHEST","CHEST"],["CHEST","WAIST"],["WAIST","HIP"],["HIP","LEFTUPPERLEG"],["LEFTUPPERLEG","LEFTLOWERLEG"],["LEFTLOWERLEG","LEFTFOOT"],["HIP","LEFTKNEE"],["LEFTKNEE","LEFTFOOT"],["HIP","RIGHTUPPERLEG"],["RIGHTUPPERLEG","RIGHTLOWERLEG"],["RIGHTLOWERLEG","RIGHTFOOT"],["HIP","RIGHTKNEE"],["RIGHTKNEE","RIGHTFOOT"],["NECK","LEFTSHOULDER"],["LEFTSHOULDER","LEFTUPPERARM"],["LEFTUPPERARM","LEFTLOWERARM"],["LEFTLOWERARM","LEFTHAND"],["NECK","RIGHTSHOULDER"],["RIGHTSHOULDER","RIGHTUPPERARM"],["RIGHTUPPERARM","RIGHTLOWERARM"],["RIGHTLOWERARM","RIGHTHAND"]];
+    const draw=(group,color,connect)=>{const byName=new Map(Object.entries(group).map(([name,value])=>[canonical(name),value]));poseCtx.strokeStyle=color;poseCtx.lineWidth=2;if(connect){for(const [a,b] of links){const pa=byName.get(a),pb=byName.get(b);if(!pa||!pb)continue;poseCtx.beginPath();poseCtx.moveTo(pad+(pa.x-minX)*scale,h-pad-(pa.y-minY)*scale);poseCtx.lineTo(pad+(pb.x-minX)*scale,h-pad-(pb.y-minY)*scale);poseCtx.stroke();}}poseCtx.fillStyle=color;for(const [name,p] of byName){if(!p)continue;const x=pad+(p.x-minX)*scale,y=h-pad-(p.y-minY)*scale;poseCtx.beginPath();poseCtx.arc(x,y,4,0,Math.PI*2);poseCtx.fill();poseCtx.font="10px system-ui";poseCtx.fillText(name,x+5,y-4);}};
+    draw(groups[0],"#74b9ff",true);draw(groups[1],"#55efc4",true);draw(groups[2],"#ffeaa7",true);draw(Object.fromEntries(feet.map((p,i)=>[String(i),p])),"#ff7675",false);
+  }
+  function selectedId() { return trackerSelect.value; }
+  function plot() {
+    const w=canvas.width,h=canvas.height,pad=38; ctx.clearRect(0,0,w,h); ctx.fillStyle="#121820"; ctx.fillRect(0,0,w,h);
+    if (!frames.length) return;
+    const id=selectedId(); const points=frames.map((f,i)=>{const t=id ? f.trackers.find(item=>String(item.id)===id) : null; return { frame:f, index:i, tracker:t };});
+    let min=0,max=1; for(const point of points){if(!point.tracker)continue;for(const value of [point.tracker.angularSpeed,point.tracker.linearSpeed,point.tracker.temperature]){if(value!==null&&Number.isFinite(value)){if(value<min)min=value;if(value>max)max=value;}}} const span=max-min||1;
+    ctx.strokeStyle="#303a48"; ctx.lineWidth=1; ctx.font="11px system-ui"; ctx.fillStyle="#9eabba";
+    for(let i=0;i<5;i++){const y=pad+(h-pad*1.5)*i/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();ctx.fillText(format(max-(span*i/4),1),4,y+4);}
+    const colors=["#74b9ff","#55efc4","#ffeaa7"]; const keys=["angularSpeed","linearSpeed","temperature"];
+    keys.forEach((key,series)=>{ctx.strokeStyle=colors[series];ctx.lineWidth=2;ctx.beginPath();let open=false;let lastEpoch=null;const step=Math.max(1,Math.ceil(frames.length/2000));for(let i=0;i<frames.length;i++){const point=points[i];const value=point.tracker?.[key];if(value===null||value===undefined||!Number.isFinite(value)){open=false;continue;}if(lastEpoch!==null&&point.frame.resetEpoch!==lastEpoch)open=false;lastEpoch=point.frame.resetEpoch;if(i%step!==0&&i!==frames.length-1)continue;const x=pad+(w-pad*2)*(i/Math.max(1,frames.length-1));const y=pad+(h-pad*1.5)*(1-(value-min)/span);if(!open)ctx.moveTo(x,y);else ctx.lineTo(x,y);open=true;}ctx.stroke();});
+    const x=pad+(w-pad*2)*(current/Math.max(1,frames.length-1));ctx.strokeStyle="#ff7675";ctx.beginPath();ctx.moveTo(x,pad);ctx.lineTo(x,h-pad);ctx.stroke();
+  }
+  function render() { const frame=frames[current]; frameLabel.textContent=`${frames.length ? current+1 : 0} / ${frames.length}`; frameInput.value=String(current); renderTable(frame); renderContacts(frame); renderDiagnostics(frame); plot(); }
+  function stopPlayback() { playing=false; playButton.textContent="Play"; if(playTimer) window.clearInterval(playTimer); playTimer=0; }
+  function startPlayback() { if(!frames.length)return; playing=!playing; playButton.textContent=playing?"Pause":"Play"; if(playing) playTimer=window.setInterval(()=>{current=(current+1)%frames.length;render();},100); else if(playTimer)window.clearInterval(playTimer); }
+  fileInput.addEventListener("change", async () => {
+    stopPlayback(); frames=[]; current=0; frameInput.disabled=true; playButton.disabled=true; trackerSelect.disabled=true; render(); const file=fileInput.files?.[0]; if(!file)return;
+    if(file.size>MAX_BYTES){setMessage("File exceeds the 128 MB limit.",true);return;}
+    try {
+      const text=await file.text(); const lines=text.split(/\r?\n/); const parsed=[]; const errors=[]; const reportError=(text)=>{if(errors.length<20)errors.push(text);}; let header=null;
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i].trim(); if(!line)continue;
+        try{
+          const value=JSON.parse(line);
+          if(!value || typeof value!=="object" || Array.isArray(value)){reportError(`Line ${i+1}: expected a JSON object.`);continue;}
+          if(value.type==="header") { if(value.schemaVersion!==1){reportError(`Line ${i+1}: unsupported schema version ${String(value.schemaVersion)}.`);continue;} header=value; continue; }
+          if(value.type!=="frame" || !value.frame || typeof value.frame!=="object" || typeof value.frame.timestampNanos!=="number" || !Array.isArray(value.frame.samples) || !Array.isArray(value.frame.computedSamples)){reportError(`Line ${i+1}: expected a telemetry frame with required fields.`);continue;}
+          if(parsed.length>=MAX_FRAMES){errors.push(`Frame limit reached at line ${i+1} (${MAX_FRAMES} frames).`);break;}
+          const clean={...value,frame:{...value.frame}};
+          for(const field of ["samples","computedSamples"]) clean.frame[field]=value.frame[field].filter((sample,index)=>{const valid=sample&&typeof sample==="object"&&!Array.isArray(sample);if(!valid)reportError(`Line ${i+1}: ${field}[${index}] must be an object.`);return valid;});
+          parsed.push(clean);
+        } catch(e) { reportError(`Line ${i+1}: ${e.message}`); if(errors.length>=20)break; }
+      }
+      if(!parsed.length){setMessage(errors.length?errors.join("\n"):"No telemetry frame objects found.",true);return;}
+      frames=normalizeFrames(parsed); updateTrackerSelector(); frameInput.max=String(Math.max(0,frames.length-1)); frameInput.disabled=false; playButton.disabled=false; meta.textContent=`${file.name} | ${file.size.toLocaleString()} bytes${header?.schemaVersion ? ` | schema ${header.schemaVersion}` : ""}`; setMessage(errors.length?`Loaded ${frames.length} frames with parse errors:\n${errors.slice(0,20).join("\n")}`:`Loaded ${frames.length} frames.`,Boolean(errors.length)); render();
+    } catch(e) { setMessage(`Could not read recording: ${e.message}`,true); }
+  });
+  frameInput.addEventListener("input",()=>{current=Number(frameInput.value)||0;render();}); trackerSelect.addEventListener("change",render); playButton.addEventListener("click",startPlayback); poseProjectionSelect.addEventListener("change",()=>{poseProjection=poseProjectionSelect.value==="top"?"top":"front";render();}); render();
+  if (typeof window !== "undefined") window.__adaptiveTelemetryTest = { normalizeFrames, renderDiagnostics, projectPoint };
+})();
+</script>
+</body>
+</html>
+

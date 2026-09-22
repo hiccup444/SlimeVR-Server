@@ -20,7 +20,7 @@ import kotlin.math.*
  * large range of actions and body types.
  */
 
-class LegTweaksBuffer @Suppress("ktlint") constructor() {
+class LegTweaksBuffer @Suppress("ktlint") constructor(val timeOfFrame: Long = System.nanoTime()) {
 	// hyperparameters / constants
 	companion object {
 		const val STATE_UNKNOWN = 0
@@ -177,7 +177,6 @@ class LegTweaksBuffer @Suppress("ktlint") constructor() {
 		private set
 
 	// other data
-	val timeOfFrame: Long = System.nanoTime()
 	var parent: LegTweaksBuffer? = null
 		private set
 
@@ -211,7 +210,8 @@ class LegTweaksBuffer @Suppress("ktlint") constructor() {
 		centerOfMass: Vector3,
 		parent: LegTweaksBuffer,
 		active: Boolean,
-	) : this() {
+		timeOfFrame: Long = System.nanoTime(),
+	) : this(timeOfFrame) {
 		this.leftFootPosition = leftFootPosition
 		this.rightFootPosition = rightFootPosition
 		this.leftKneePosition = leftKneePosition
@@ -264,7 +264,10 @@ class LegTweaksBuffer @Suppress("ktlint") constructor() {
 	}
 
 	// returns 1 / delta time
-	fun getTimeDelta(): Float = if (parent == null) 0.0f else 1.0f / ((timeOfFrame - parent!!.timeOfFrame) / NS_CONVERT)
+	fun getTimeDelta(): Float {
+		val elapsed = parent?.let { timeOfFrame - it.timeOfFrame } ?: return 0f
+		return if (elapsed in 1..500_000_000L) NS_CONVERT / elapsed else 0f
+	}
 
 	// calculate movement attributes
 	private fun calculateFootAttributes(active: Boolean) {

@@ -114,8 +114,16 @@ class Tracker @JvmOverloads constructor(
 ) {
 	private val timer = BufferedTimer(1f)
 	private var timeAtLastUpdate: Long = System.currentTimeMillis()
+
+	/** Monotonic arrival time of the latest rotation sample, excluding heartbeats. */
+	var lastRotationUpdateNanos: Long? = null
+		private set
 	private var timeScheduledSleep: Long = Long.MAX_VALUE
 	private var _rotation = Quaternion.IDENTITY
+	var adaptiveYawBiasRadians = 0f
+		internal set
+	var adaptiveMountingRotation = Quaternion.IDENTITY
+		internal set
 
 	// IMU: +z forward, +x left, +y up
 	// SlimeVR: +z backward, +x right, +y up
@@ -143,6 +151,26 @@ class Tracker @JvmOverloads constructor(
 	var ping: Int? = null
 	var signalStrength: Int? = null
 	var temperature: Float? = null
+		set(value) {
+			field = value
+			lastTemperatureUpdateNanos = if (value?.isFinite() == true) System.nanoTime() else null
+		}
+	var lastTemperatureUpdateNanos: Long? = null
+		private set
+	var lastAccelerationUpdateNanos: Long? = null
+		private set
+
+	fun setTemperature(value: Float?, nowNanos: Long) {
+		temperature = value
+		lastTemperatureUpdateNanos = if (value?.isFinite() == true) nowNanos else null
+	}
+
+	/** Restores recorded input freshness without treating replay delivery as a new sensor packet. */
+	internal fun restoreInputSampleTimes(rotationNanos: Long?, accelerationNanos: Long?, temperatureNanos: Long?) {
+		lastRotationUpdateNanos = rotationNanos
+		lastAccelerationUpdateNanos = accelerationNanos
+		lastTemperatureUpdateNanos = temperatureNanos
+	}
 	var button: Int? = null
 	var packetsReceived: Int? = null
 	var packetsLost: Int? = null
@@ -311,7 +339,9 @@ class Tracker @JvmOverloads constructor(
 	 * Tells the tracker that it received new data
 	 * NOTE: Use only when rotation is received
 	 */
-	fun dataTick() {
+	@JvmOverloads
+	fun dataTick(nowNanos: Long = System.nanoTime()) {
+		lastRotationUpdateNanos = nowNanos
 		timer.update()
 		timeAtLastUpdate = System.currentTimeMillis()
 		if (trackRotDirection) {
@@ -430,6 +460,12 @@ class Tracker @JvmOverloads constructor(
 	 * and reset smoothing if applicable
 	 */
 	fun getRotation(): Quaternion {
+		val measured = getRotationWithoutAdaptive() * adaptiveMountingRotation
+		return if (adaptiveYawBiasRadians == 0f) measured else Quaternion.rotationAroundYAxis(-adaptiveYawBiasRadians) * measured
+	}
+
+	/** Rotation after existing mounting/reset/filtering, before adaptive pose corrections. */
+	fun getRotationWithoutAdaptive(): Quaternion {
 		var rot = getRotationNoResetSmooth()
 
 		if (yawResetSmoothing.remainingTime > 0f) {
@@ -475,8 +511,10 @@ class Tracker @JvmOverloads constructor(
 	/**
 	 * Sets the raw (unadjusted) acceleration of the tracker.
 	 */
-	fun setAcceleration(vec: Vector3) {
+	@JvmOverloads
+	fun setAcceleration(vec: Vector3, nowNanos: Long = System.nanoTime()) {
 		this._acceleration = vec
+		lastAccelerationUpdateNanos = nowNanos
 	}
 
 	/**

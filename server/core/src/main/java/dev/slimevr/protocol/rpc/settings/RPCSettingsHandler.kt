@@ -11,6 +11,8 @@ import dev.slimevr.tracking.processor.config.SkeletonConfigToggles
 import dev.slimevr.tracking.processor.config.SkeletonConfigValues
 import dev.slimevr.tracking.trackers.TrackerPosition
 import dev.slimevr.tracking.trackers.TrackerRole
+import solarxr_protocol.rpc.AdaptiveDiagnosticsRequest
+import solarxr_protocol.rpc.AdaptiveDiagnosticsResponse
 import solarxr_protocol.rpc.ChangeSettingsRequest
 import solarxr_protocol.rpc.RpcMessage
 import solarxr_protocol.rpc.RpcMessageHeader
@@ -22,6 +24,21 @@ class RPCSettingsHandler(var rpcHandler: RPCHandler, var api: ProtocolAPI) {
 		rpcHandler.registerPacketListener(RpcMessage.SettingsRequest, ::onSettingsRequest)
 		rpcHandler.registerPacketListener(RpcMessage.ChangeSettingsRequest, ::onChangeSettingsRequest)
 		rpcHandler.registerPacketListener(RpcMessage.SettingsResetRequest, ::onSettingsResetRequest)
+		rpcHandler.registerPacketListener(RpcMessage.AdaptiveDiagnosticsRequest, ::onAdaptiveDiagnosticsRequest)
+	}
+
+	fun onAdaptiveDiagnosticsRequest(conn: GenericConnection, messageHeader: RpcMessageHeader?) {
+		if (messageHeader == null) return
+		messageHeader.message(AdaptiveDiagnosticsRequest()) as? AdaptiveDiagnosticsRequest ?: return
+		api.server.queueTask {
+			val fbb = FlatBufferBuilder(256)
+			val frameJson = api.server.humanPoseManager.adaptiveDiagnosticsJson().orEmpty()
+			val frameJsonOffset = fbb.createString(frameJson)
+			val response = AdaptiveDiagnosticsResponse.createAdaptiveDiagnosticsResponse(fbb, frameJsonOffset)
+			val outbound = rpcHandler.createRPCMessage(fbb, RpcMessage.AdaptiveDiagnosticsResponse, response, messageHeader)
+			fbb.finish(outbound)
+			conn.send(fbb.dataBuffer())
+		}
 	}
 
 	fun onSettingsRequest(conn: GenericConnection, messageHeader: RpcMessageHeader?) {
@@ -381,7 +398,28 @@ class RPCSettingsHandler(var rpcHandler: RPCHandler, var api: ProtocolAPI) {
 			velocityConfig.updateTrackersVelocitySettings()
 		}
 
+		var clearCalibrationRequested = false
+		req.adaptiveTracking()?.let { requestConfig ->
+			val config = api.server.configManager.vrConfig.adaptiveTracking
+			applyAdaptiveTrackingSettings(requestConfig, config)
+			clearCalibrationRequested = requestConfig.hasClearLearnedCalibration() &&
+				requestConfig.clearLearnedCalibration() == solarxr_protocol.rpc.AdaptiveBoolean.TRUE
+		}
+
 		api.server.configManager.saveConfig()
+		if (clearCalibrationRequested) {
+			api.server.humanPoseManager.adaptiveArmCalibration.reset()
+			val connection = conn
+			api.server.humanPoseManager.adaptiveEstimator.clearLearnedCalibration().whenComplete { cleared, error ->
+				if (connection != null && error == null && cleared == true) {
+					api.server.queueTask {
+						rpcHandler.sendSettingsChangedResponse(connection, messageHeader)
+					}
+				}
+			}
+		} else if (conn != null && req.adaptiveTracking() != null) {
+			rpcHandler.sendSettingsChangedResponse(conn, messageHeader)
+		}
 	}
 
 	fun onSettingsResetRequest(conn: GenericConnection, messageHeader: RpcMessageHeader?) {
@@ -398,7 +436,7 @@ class RPCSettingsHandler(var rpcHandler: RPCHandler, var api: ProtocolAPI) {
 			val settings = SettingsResponse
 				.createSettingsResponse(
 					fbb,
-					createSteamVRSettings(fbb, bridge), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+					createSteamVRSettings(fbb, bridge), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 				)
 			val outbound =
 				rpcHandler.createRPCMessage(fbb, RpcMessage.SettingsResponse, settings)

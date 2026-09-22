@@ -272,6 +272,9 @@ class VRServer @JvmOverloads constructor(
 				sleep(1) // 1000Hz
 			} catch (error: InterruptedException) {
 				LogManager.info("VRServer thread interrupted")
+				humanPoseManager.adaptiveTelemetry.close()
+				humanPoseManager.adaptiveEstimator.close()
+				humanPoseManager.adaptiveArmCalibration.close()
 				break
 			}
 		}

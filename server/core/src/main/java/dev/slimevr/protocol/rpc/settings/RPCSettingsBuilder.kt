@@ -3,6 +3,7 @@ package dev.slimevr.protocol.rpc.settings
 import com.google.flatbuffers.FlatBufferBuilder
 import dev.slimevr.VRServer
 import dev.slimevr.bridge.ISteamVRBridge
+import dev.slimevr.config.AdaptiveTrackingConfig
 import dev.slimevr.config.AutoBoneConfig
 import dev.slimevr.config.DriftCompensationConfig
 import dev.slimevr.config.FiltersConfig
@@ -21,6 +22,8 @@ import dev.slimevr.tracking.processor.HumanPoseManager
 import dev.slimevr.tracking.processor.config.SkeletonConfigToggles
 import dev.slimevr.tracking.processor.config.SkeletonConfigValues
 import dev.slimevr.tracking.trackers.TrackerRole
+import solarxr_protocol.rpc.AdaptiveBoolean
+import solarxr_protocol.rpc.AdaptiveTrackingSettings
 import solarxr_protocol.rpc.AutoBoneSettings
 import solarxr_protocol.rpc.DriftCompensationSettings
 import solarxr_protocol.rpc.FilteringSettings
@@ -443,8 +446,44 @@ fun createSettingsResponse(fbb: FlatBufferBuilder, server: VRServer): Int {
 				fbb,
 				server.configManager.vrConfig.vmc,
 			),
+			createAdaptiveTrackingSettings(
+				fbb,
+				server.configManager.vrConfig.adaptiveTracking,
+			),
 		)
 }
+
+fun createAdaptiveTrackingSettings(
+	fbb: FlatBufferBuilder,
+	config: AdaptiveTrackingConfig,
+): Int {
+	val armCalibrationMode = fbb.createString(config.armCalibrationMode)
+	AdaptiveTrackingSettings.startAdaptiveTrackingSettings(fbb)
+	AdaptiveTrackingSettings.addTelemetryEnabled(fbb, config.telemetryEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addConfidenceDiagnosticsEnabled(fbb, config.confidenceDiagnosticsEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addFootContactDiagnosticsEnabled(fbb, config.footContactDiagnosticsEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addFootAnchoringEnabled(fbb, config.footAnchoringEnabled.toAdaptiveBoolean())
+	if (config.footAnchorStrength == 0f) {
+		fbb.addFloat(4, 0f, 1.0)
+	} else {
+		AdaptiveTrackingSettings.addFootAnchorStrength(fbb, config.footAnchorStrength)
+	}
+	AdaptiveTrackingSettings.addTelemetrySampleRateHz(fbb, config.telemetrySampleRateHz)
+	AdaptiveTrackingSettings.addYawCorrectionEnabled(fbb, config.yawCorrectionEnabled.toAdaptiveBoolean())
+	if (config.yawCorrectionStrength == 0f) {
+		fbb.addFloat(7, 0f, 1.0)
+	} else {
+		AdaptiveTrackingSettings.addYawCorrectionStrength(fbb, config.yawCorrectionStrength)
+	}
+	AdaptiveTrackingSettings.addPoseOptimizerEnabled(fbb, config.poseOptimizerEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addTemperatureLearningEnabled(fbb, config.temperatureLearningEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addLiveDiagnosticsEnabled(fbb, config.liveDiagnosticsEnabled.toAdaptiveBoolean())
+	AdaptiveTrackingSettings.addArmCalibrationMode(fbb, armCalibrationMode)
+	AdaptiveTrackingSettings.addFloorEstimationEnabled(fbb, config.floorEstimationEnabled.toAdaptiveBoolean())
+	return AdaptiveTrackingSettings.endAdaptiveTrackingSettings(fbb)
+}
+
+private fun Boolean.toAdaptiveBoolean(): Int = if (this) AdaptiveBoolean.TRUE else AdaptiveBoolean.FALSE
 
 fun createStayAlignedSettings(
 	fbb: FlatBufferBuilder,

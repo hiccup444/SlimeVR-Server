@@ -3,7 +3,11 @@ package dev.slimevr.tracking.processor.skeleton
 import com.jme3.math.FastMath
 import dev.slimevr.config.LegTweaksConfig
 import dev.slimevr.tracking.processor.Bone
+import dev.slimevr.tracking.processor.adaptive.AdaptiveFloorEstimate
+import dev.slimevr.tracking.processor.adaptive.AdaptiveFloorEstimator
+import dev.slimevr.tracking.processor.adaptive.FootContactDetector
 import dev.slimevr.tracking.processor.config.SkeletonConfigToggles
+import dev.slimevr.tracking.trackers.Tracker
 import io.github.axisangles.ktmath.EulerAngles
 import io.github.axisangles.ktmath.EulerOrder
 import io.github.axisangles.ktmath.Quaternion
@@ -11,6 +15,21 @@ import io.github.axisangles.ktmath.Vector3
 import kotlin.math.*
 
 class LegTweaks(private val skeleton: HumanSkeleton) {
+	val adaptiveLeftFoot = FootContactDetector()
+	val adaptiveRightFoot = FootContactDetector()
+	private val adaptiveFloor = AdaptiveFloorEstimator()
+	val adaptiveFloorDiagnostic: AdaptiveFloorEstimate? get() = adaptiveFloor.estimate
+	private var adaptiveAnchoringWasEnabled = false
+	private var floorEstimationWasEnabled = false
+	private val adaptiveConfig get() = skeleton.humanPoseManager.adaptiveTrackingConfig
+	val adaptiveAnchoringEligible get() = adaptiveConfig.footAnchoringEnabled && skatingCorrectionEnabled && enabled && !localizerMode && active && !bufferInvalid
+
+	fun resetAdaptiveContacts() {
+		adaptiveLeftFoot.reset()
+		adaptiveRightFoot.reset()
+		adaptiveFloor.reset(floorLevel.toDouble())
+	}
+
 	/**
 	 * here is an explanation of each parameter that may need explaining
 	 * STANDING_CUTOFF_VERTICAL is the percentage the hip has to be below its
@@ -131,9 +150,11 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 
 	fun resetFloorLevel() {
 		initialized = false
+		resetAdaptiveContacts()
 	}
 
 	fun setFloorClipEnabled(floorClipEnabled: Boolean) {
+		resetAdaptiveContacts()
 		this.floorClipEnabled = floorClipEnabled
 
 		// reset the buffer
@@ -142,6 +163,7 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 	}
 
 	fun setSkatingCorrectionEnabled(skatingCorrectionEnabled: Boolean) {
+		resetAdaptiveContacts()
 		this.skatingCorrectionEnabled = skatingCorrectionEnabled
 
 		// reset the buffer
@@ -150,11 +172,13 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 	}
 
 	fun setLocalizerMode(value: Boolean) {
+		resetAdaptiveContacts()
 		localizerMode = value
 		if (value) setFloorLevel(0.0f)
 	}
 
 	fun resetBuffer() {
+		resetAdaptiveContacts()
 		bufferInvalid = true
 	}
 
@@ -179,15 +203,18 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 	}
 
 	// tweak the position of the legs based on data from the last frames
-	fun tweakLegs() {
+	fun tweakLegs(nowNanos: Long = System.nanoTime()) {
 		// If user doesn't have knees or legtweaks is disabled,
 		// don't spend time doing calculations!
-		if ((!skeleton.hasKneeTrackers && !alwaysUseFloorclip) || !enabled) return
+		if ((!skeleton.hasKneeTrackers && !alwaysUseFloorclip) || !enabled) {
+			resetAdaptiveContacts()
+			return
+		}
 
 		// update the class with the latest data from the skeleton
 		// if false is returned something indicated that the legs should not
 		// be tweaked
-		preUpdate()
+		preUpdate(nowNanos)
 
 		// correct foot rotation's (Foot plant & Toe snap)
 		if (footPlantEnabled || toeSnapEnabled) correctFootRotations()
@@ -196,7 +223,12 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 		if (floorClipEnabled && !localizerMode) correctClipping()
 
 		// correct for skating if needed (Skating correction)
-		if (skatingCorrectionEnabled) correctSkating()
+		if (adaptiveAnchoringEligible) {
+			leftFootPosition = adaptiveLeftFoot.correct(leftFootPosition, adaptiveConfig.footAnchorStrength)
+			rightFootPosition = adaptiveRightFoot.correct(rightFootPosition, adaptiveConfig.footAnchorStrength)
+		} else if (skatingCorrectionEnabled) {
+			correctSkating()
+		}
 
 		// calculate the correction for the knees
 		if (initialized) solveLowerBody()
@@ -241,6 +273,7 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 	private fun setFloorLevel(floorLevel: Float) {
 		this.floorLevel = floorLevel
 		hipToFloorDist = hipPosition.y - floorLevel
+		adaptiveFloor.reset(floorLevel.toDouble())
 	}
 
 	// set the vectors in this object to the vectors in the skeleton
@@ -267,7 +300,7 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 	}
 
 	// updates the object with the latest data from the skeleton
-	private fun preUpdate() {
+	private fun preUpdate(nowNanos: Long) {
 		// populate the vectors with the latest data
 		setVectors()
 
@@ -288,9 +321,11 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 		// if the user is standing start checking for a good time to enable leg
 		// tweaks
 		active = isStanding()
+		updateAdaptiveContacts(nowNanos)
 
 		// if the buffer is invalid add all the extra info
 		if (bufferInvalid && !localizerMode) {
+			bufferHead = LegTweaksBuffer(nowNanos)
 			bufferHead
 				.setPositions(
 					leftFootPosition,
@@ -356,16 +391,87 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 			centerOfMass,
 			bufferHead,
 			active,
+			nowNanos,
 		)
 
 		// update the lock duration counters
 		updateLockStateCounters()
 	}
 
+	private fun updateAdaptiveContacts(now: Long) {
+		val anchoring = adaptiveAnchoringEligible
+		if (anchoring != adaptiveAnchoringWasEnabled) resetAdaptiveContacts()
+		adaptiveAnchoringWasEnabled = anchoring
+		val floorLearning = adaptiveConfig.floorEstimationEnabled
+		if (floorLearning != floorEstimationWasEnabled) adaptiveFloor.reset()
+		floorEstimationWasEnabled = floorLearning
+		val observe = ((adaptiveConfig.telemetryEnabled || adaptiveConfig.liveDiagnosticsEnabled) && adaptiveConfig.footContactDiagnosticsEnabled) || adaptiveConfig.yawCorrectionEnabled || floorLearning
+		if ((!anchoring && !observe) || !active || localizerMode || bufferInvalid) {
+			resetAdaptiveContacts()
+			return
+		}
+		fun available(tracker: Tracker?): Boolean {
+			if (tracker == null || !tracker.status.sendData || !tracker.hasRotation) return false
+			val age = tracker.lastRotationUpdateNanos?.let { now - it }
+			if (age == null && tracker.usesTimeout) return false
+			if (age != null && age !in 0..250_000_000L) return false
+			val q = tracker.getRotation()
+			return q.w.isFinite() && q.x.isFinite() && q.y.isFinite() && q.z.isFinite() && q.lenSq().isFinite() && q.lenSq() > 0f
+		}
+		val head = skeleton.headTracker
+		val worldAnchor = available(head) && head!!.hasPosition && head.position.x.isFinite() && head.position.y.isFinite() && head.position.z.isFinite()
+		fun observeFoot(detector: FootContactDetector, foot: Tracker?, thigh: Tracker?, ankle: Tracker?, position: Vector3, rotation: Quaternion) {
+			val acceleration = foot?.takeIf { it.hasAcceleration && it.lastAccelerationUpdateNanos?.let { timestamp -> now - timestamp in 0..250_000_000L } == true }?.getAcceleration()
+			detector.update(
+				position,
+				foot?.getRotationWithoutAdaptive() ?: rotation,
+				floorForClipping + footLength * getFootOffset(rotation) - currentDisengagementOffset,
+				acceleration,
+				worldAnchor && available(foot) && available(thigh) && available(ankle),
+				now,
+			)
+		}
+		val baseline = skeleton.humanPoseManager.adaptivePoseSolver.rawPose
+		val leftRaw = baseline["LEFT_FOOT_TRACKER"] ?: leftFootPosition
+		val rightRaw = baseline["RIGHT_FOOT_TRACKER"] ?: rightFootPosition
+		val baselineRotations = skeleton.humanPoseManager.adaptivePoseSolver.rawRotations
+		val leftFloorRotation = baselineRotations["LEFT_FOOT_TRACKER"] ?: leftFootRotation
+		val rightFloorRotation = baselineRotations["RIGHT_FOOT_TRACKER"] ?: rightFootRotation
+		observeFoot(adaptiveLeftFoot, skeleton.leftFootTracker, skeleton.leftUpperLegTracker, skeleton.leftLowerLegTracker, leftRaw, leftFloorRotation)
+		observeFoot(adaptiveRightFoot, skeleton.rightFootTracker, skeleton.rightUpperLegTracker, skeleton.rightLowerLegTracker, rightRaw, rightFloorRotation)
+		if (!floorLearning) return
+		val configuredHeight = skeleton.humanPoseManager.userHeightFromConfig.toDouble()
+		val headHeight = head?.takeIf { worldAnchor && !it.isInternal }?.position?.y?.toDouble()?.minus(floorLevel.toDouble())
+		val heightConfidence = if (configuredHeight.isFinite() && configuredHeight > 0.5 && headHeight != null && headHeight.isFinite()) {
+			(headHeight / configuredHeight).coerceIn(0.0, 1.0)
+		} else {
+			0.0
+		}
+		val torsoUp = skeleton.upperChestBone.getGlobalRotation().sandwich(Vector3.POS_Y).y.toDouble()
+		val uprightConfidence = if (active && torsoUp.isFinite()) min(heightConfidence, torsoUp.coerceIn(0.0, 1.0)) else 0.0
+		fun floorObservation(raw: Vector3, rotation: Quaternion) = Vector3(
+			raw.x,
+			raw.y - footLength * getFootOffset(rotation) + FLOOR_CALIBRATION_OFFSET,
+			raw.z,
+		)
+		adaptiveFloor.observe(
+			floorLevel.toDouble(),
+			floorObservation(leftRaw, leftFloorRotation),
+			adaptiveLeftFoot.snapshot,
+			floorObservation(rightRaw, rightFloorRotation),
+			adaptiveRightFoot.snapshot,
+			uprightConfidence,
+			now,
+		)
+	}
+
 	// returns true if the foot is clipped and false if it is not
+	private val floorForClipping: Float
+		get() = if (adaptiveConfig.floorEstimationEnabled && enabled && !localizerMode) adaptiveFloor.estimate?.estimatedHeightMeters?.toFloat() ?: floorLevel else floorLevel
+
 	private fun isClipped(leftOffset: Float, rightOffset: Float): Boolean = (
-		leftFootPosition.y < floorLevel + leftOffset * footLength ||
-			rightFootPosition.y < floorLevel + rightOffset * footLength
+		leftFootPosition.y < floorForClipping + leftOffset * footLength ||
+			rightFootPosition.y < floorForClipping + rightOffset * footLength
 		)
 
 	// corrects the foot position to be above the floor level that is calculated
@@ -382,14 +488,14 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 
 		// move the feet to their new positions
 		if (leftFootPosition.y
-			< floorLevel +
+			< floorForClipping +
 			footLength *
 			leftOffset -
 			currentDisengagementOffset
 		) {
 			val displacement = abs(
 				(
-					floorLevel +
+					floorForClipping +
 						footLength *
 						leftOffset -
 						leftFootPosition.y -
@@ -410,14 +516,14 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 		}
 
 		if (rightFootPosition.y
-			< floorLevel +
+			< floorForClipping +
 			footLength *
 			rightOffset -
 			currentDisengagementOffset
 		) {
 			val displacement = abs(
 				(
-					floorLevel +
+					floorForClipping +
 						footLength *
 						rightOffset -
 						rightFootPosition.y -

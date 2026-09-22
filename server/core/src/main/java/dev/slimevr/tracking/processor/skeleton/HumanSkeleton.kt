@@ -371,6 +371,10 @@ class HumanSkeleton(
 	 * Set input trackers from a list
 	 */
 	fun setTrackersFromList(trackers: List<Tracker>) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		legTweaks.resetAdaptiveContacts()
 		// Head
 		headTracker = getTrackerForSkeleton(trackers, TrackerPosition.HEAD)
 		neckTracker = getTrackerForSkeleton(trackers, TrackerPosition.NECK)
@@ -539,9 +543,10 @@ class HumanSkeleton(
 	 * Updates the pose from tracker positions
 	 */
 	@VRServerThread
-	fun updatePose() {
+	fun updatePose(nowNanos: Long = System.nanoTime()) {
 		tapDetectionManager?.update()
 		userHeightCalibration?.tick()
+		humanPoseManager.adaptiveEstimator.update(this, nowNanos)
 
 		StayAligned.adjustNextTracker(trackerSkeleton, stayAlignedConfig)
 
@@ -552,12 +557,15 @@ class HumanSkeleton(
 			// https://github.com/SlimeVR/SlimeVR-Server/issues/1297 is solved
 			headBone.updateWithConstraints(false)
 		}
-		updateComputedTrackers()
+		humanPoseManager.adaptiveArmCalibration.update(this, nowNanos)
+		humanPoseManager.adaptiveEstimator.updateAbsoluteConstraints(this, nowNanos)
+		humanPoseManager.adaptivePoseSolver.update(this, nowNanos)
+		updateComputedTrackers(nowNanos)
 
 		// Don't run post-processing if the tracking is paused
 		if (pauseTracking) return
 
-		legTweaks.tweakLegs()
+		legTweaks.tweakLegs(nowNanos)
 		localizer.update()
 	}
 
@@ -1000,6 +1008,12 @@ class HumanSkeleton(
 		handTracker: Tracker?,
 	) {
 		if (isTrackingFromController) { // From controller
+			if (humanPoseManager.adaptiveTrackingConfig.poseOptimizerEnabled || humanPoseManager.adaptiveTrackingConfig.yawCorrectionEnabled || humanPoseManager.adaptiveTrackingConfig.armCalibrationMode != "disabled") {
+				// The adaptive closure needs a fresh shoulder-side chain alongside the controller-side chain.
+				upperShoulderBone.setRotation(upperChestBone.getLocalRotation())
+				shoulderBone.setRotation(shoulderTracker?.getRotation() ?: upperChestBone.getLocalRotation())
+				upperArmBone.setRotation(getFirstAvailableTracker(upperArmTracker, lowerArmTracker)?.getRotation() ?: upperChestBone.getLocalRotation())
+			}
 			// Set hand rotation and position from tracker
 			handTracker?.let {
 				handTrackerBone.setPosition(it.position)
@@ -1152,25 +1166,25 @@ class HumanSkeleton(
 	}
 
 	// Update the output trackers
-	private fun updateComputedTrackers() {
-		updateComputedTracker(computedHeadTracker, headTrackerBone)
-		updateComputedTracker(computedChestTracker, chestTrackerBone)
-		updateComputedTracker(computedHipTracker, hipTrackerBone)
-		updateComputedTracker(computedLeftKneeTracker, leftKneeTrackerBone)
-		updateComputedTracker(computedRightKneeTracker, rightKneeTrackerBone)
-		updateComputedTracker(computedLeftFootTracker, leftFootTrackerBone)
-		updateComputedTracker(computedRightFootTracker, rightFootTrackerBone)
-		updateComputedTracker(computedLeftElbowTracker, leftElbowTrackerBone)
-		updateComputedTracker(computedRightElbowTracker, rightElbowTrackerBone)
-		updateComputedTracker(computedLeftHandTracker, leftHandTrackerBone)
-		updateComputedTracker(computedRightHandTracker, rightHandTrackerBone)
+	private fun updateComputedTrackers(nowNanos: Long) {
+		updateComputedTracker(computedHeadTracker, headTrackerBone, nowNanos)
+		updateComputedTracker(computedChestTracker, chestTrackerBone, nowNanos)
+		updateComputedTracker(computedHipTracker, hipTrackerBone, nowNanos)
+		updateComputedTracker(computedLeftKneeTracker, leftKneeTrackerBone, nowNanos)
+		updateComputedTracker(computedRightKneeTracker, rightKneeTrackerBone, nowNanos)
+		updateComputedTracker(computedLeftFootTracker, leftFootTrackerBone, nowNanos)
+		updateComputedTracker(computedRightFootTracker, rightFootTrackerBone, nowNanos)
+		updateComputedTracker(computedLeftElbowTracker, leftElbowTrackerBone, nowNanos)
+		updateComputedTracker(computedRightElbowTracker, rightElbowTrackerBone, nowNanos)
+		updateComputedTracker(computedLeftHandTracker, leftHandTrackerBone, nowNanos)
+		updateComputedTracker(computedRightHandTracker, rightHandTrackerBone, nowNanos)
 	}
 
-	private fun updateComputedTracker(computedTracker: Tracker?, trackerBone: Bone) {
+	private fun updateComputedTracker(computedTracker: Tracker?, trackerBone: Bone, nowNanos: Long) {
 		computedTracker?.let {
 			it.position = trackerBone.getTailPosition()
 			it.setRotation(trackerBone.getGlobalRotation() * trackerBone.rotationOffset.inv())
-			it.dataTick()
+			it.dataTick(nowNanos)
 			it.updateDerivedVelocity()
 		}
 	}
@@ -1549,6 +1563,10 @@ class HumanSkeleton(
 
 	@JvmOverloads
 	fun resetTrackersFull(resetSourceName: String?, bodyParts: List<Int> = ArrayList()) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		humanPoseManager.adaptiveTelemetry.reset()
 		humanPoseManager.server?.serverGuards?.onFullReset()
 
 		var referenceRotation = IDENTITY
@@ -1582,6 +1600,10 @@ class HumanSkeleton(
 	@VRServerThread
 	@JvmOverloads
 	fun resetTrackersYaw(resetSourceName: String?, bodyParts: List<Int> = TrackerUtils.allBodyPartsButFingers) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		humanPoseManager.adaptiveTelemetry.reset()
 		// Resets the yaw of the trackers with the head as reference.
 		var referenceRotation = IDENTITY
 		headTracker?.let {
@@ -1610,6 +1632,10 @@ class HumanSkeleton(
 	@VRServerThread
 	@JvmOverloads
 	fun resetTrackersMounting(resetSourceName: String?, bodyParts: List<Int>) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		humanPoseManager.adaptiveTelemetry.reset()
 		val trackersToReset = trackersToReset
 
 		// TODO: PLEASE rewrite this handling at some point in the future... This is so
@@ -1668,6 +1694,10 @@ class HumanSkeleton(
 
 	@VRServerThread
 	fun clearTrackersMounting(resetSourceName: String?) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		humanPoseManager.adaptiveTelemetry.reset()
 		headTracker?.let {
 			if (it.allowMounting) it.resetsHandler.clearMounting()
 		}
@@ -1750,6 +1780,7 @@ class HumanSkeleton(
 	 */
 	@VRServerThread
 	fun setLegTweaksEnabled(value: Boolean) {
+		legTweaks.resetAdaptiveContacts()
 		legTweaks.enabled = value
 	}
 
@@ -1774,6 +1805,10 @@ class HumanSkeleton(
 	fun getPauseTracking(): Boolean = pauseTracking
 
 	fun setPauseTracking(pauseTracking: Boolean, sourceName: String?) {
+		humanPoseManager.adaptiveEstimator.reset()
+		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveArmCalibration.reset()
+		legTweaks.resetAdaptiveContacts()
 		if (!pauseTracking && this.pauseTracking) {
 			// If unpausing tracking, clear the legtweaks buffer
 			legTweaks.resetBuffer()

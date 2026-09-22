@@ -25,6 +25,7 @@ import dev.slimevr.desktop.platform.windows.WindowsNamedPipeBridge
 import dev.slimevr.desktop.platform.windows.WindowsNamedPipeRpcBridge
 import dev.slimevr.desktop.serial.DesktopSerialHandler
 import dev.slimevr.desktop.tracking.trackers.hid.DesktopHIDManager
+import dev.slimevr.tracking.processor.adaptive.AdaptivePoseReplay
 import dev.slimevr.tracking.trackers.Tracker
 import io.eiren.util.OperatingSystem
 import io.eiren.util.OperatingSystem.Companion.currentPlatform
@@ -58,6 +59,10 @@ val VERSION =
 val featureFlags = FeatureFlags()
 
 fun main(args: Array<String>) {
+	if (args.firstOrNull() == "adaptive-replay") {
+		AdaptivePoseReplay.main(args.drop(1).toTypedArray())
+		return
+	}
 	System.setProperty("awt.useSystemAAFontSettings", "on")
 	System.setProperty("swing.aatext", "true")
 

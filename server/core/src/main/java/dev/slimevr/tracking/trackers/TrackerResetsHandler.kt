@@ -35,6 +35,7 @@ class TrackerResetsHandler(val tracker: Tracker) {
 	private var compensateDrift = false
 	private var driftPrediction = false
 	private var driftCompensationEnabled = false
+	val isDriftCompensationActive get() = driftCompensationEnabled
 	private var armsResetMode = ArmsResetModes.BACK
 	private var yawResetSmoothTime = 0.0f
 	var saveMountingReset = false

@@ -15,6 +15,8 @@ import dev.slimevr.tracking.trackers.TrackerRole
 	toCurrentConverterClass = CurrentVRConfigConverter::class,
 )
 class VRConfig {
+	val adaptiveTracking: AdaptiveTrackingConfig = AdaptiveTrackingConfig()
+
 	val server: ServerConfig = ServerConfig()
 
 	val filters: FiltersConfig = FiltersConfig()

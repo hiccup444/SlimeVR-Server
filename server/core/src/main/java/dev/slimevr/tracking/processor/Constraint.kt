@@ -28,6 +28,8 @@ class Constraint(
 	private val swingRad = swing * FastMath.DEG_TO_RAD
 	private val allowedDeviationRad = allowedDeviation * FastMath.DEG_TO_RAD
 	private val maxDeviationFromTrackerRad = maxDeviationFromTracker * FastMath.DEG_TO_RAD
+	val swingLimitRadians: Float get() = swingRad
+	val twistLimitRadians: Float get() = twistRad
 
 	/**
 	 * allowModification may be false for reasons other than a tracker being on this bone

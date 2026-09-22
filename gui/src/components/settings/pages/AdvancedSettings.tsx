@@ -18,6 +18,7 @@ import {
 import { RpcMessage, SettingsResetRequestT } from 'solarxr-protocol';
 import { useWebsocketAPI } from '@/hooks/websocket-api';
 import { useElectron } from '@/hooks/electron';
+import { AdaptiveTrackingSettings } from './AdaptiveTrackingSettings';
 
 function guiDefaults() {
   // Destructure the properties to exclude "lang"
@@ -221,6 +222,7 @@ export function AdvancedSettings() {
           </>
         </SettingsPagePaneLayout>
       </form>
+      <AdaptiveTrackingSettings />
     </SettingsPageLayout>
   );
 }
