@@ -35,6 +35,7 @@ class TrackerHealthMonitorTest {
 		rotationExpected = true,
 		positionExpected = false,
 		continuousObservation = continuous,
+		accelerationAgeNanos = age,
 	)
 
 	@Test
@@ -85,6 +86,29 @@ class TrackerHealthMonitorTest {
 		}
 		assertFalse(result.suspectedFrozen)
 		assertFalse("FROZEN_WITH_INDEPENDENT_TARGET_MOTION" in result.reasons)
+	}
+
+	@Test
+	fun briefMotionEvidenceAfterStillnessDoesNotTriggerFrozenDetection() {
+		val monitor = TrackerHealthMonitor()
+		for (index in 0..30) {
+			val time = index * 100_000_000L
+			monitor.observe(sample(time), time)
+		}
+		val now = 3_100_000_000L
+		val result = monitor.observe(sample(now), now, TrackerMotionContext(1.0, now))
+		assertFalse(result.suspectedFrozen)
+	}
+
+	@Test
+	fun staleAccelerationCannotReduceCurrentOrientationQuality() {
+		val monitor = TrackerHealthMonitor()
+		val result = monitor.observe(
+			sample(0L, acceleration = Vector3(45f, 0f, 0f)).copy(accelerationAgeNanos = 1_000_000_000L),
+			0L,
+		)
+		assertFalse("IMPOSSIBLE_ACCELERATION" in result.reasons)
+		assertTrue(result.qualityMultiplier > 0.08f)
 	}
 
 	@Test

@@ -45,6 +45,7 @@ data class TelemetrySample(
 	val confidence: TrackerConfidence? = null,
 	val accelerationAgeNanos: Long? = null,
 	val temperatureAgeNanos: Long? = null,
+	val health: TrackerHealthDiagnostic? = null,
 )
 
 /** Diagnostic measurement quality, not a probability that the pose is correct. */

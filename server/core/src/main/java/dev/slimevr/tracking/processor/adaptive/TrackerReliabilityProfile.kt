@@ -40,7 +40,6 @@ class TrackerReliabilityProfile private constructor(val hardwareKeyHash: String,
 			independentResidualMagnitudeRadians !in 0.0..MAX_RESIDUAL_RADIANS ||
 			!confidence.isFinite() ||
 			confidence !in MINIMUM_CONFIDENCE..1.0 ||
-			nowNanos < 0L ||
 			!independentlySupported ||
 			!lowMotion ||
 			uncertain
@@ -134,7 +133,8 @@ class TrackerReliabilityProfile private constructor(val hardwareKeyHash: String,
 			require(snapshot.mature == (snapshot.trustedSeconds >= MINIMUM_TRUSTED_SECONDS))
 			val profile = TrackerReliabilityProfile(snapshot.hardwareKeyHash, true)
 			profile.trustedSeconds = snapshot.trustedSeconds
-			profile.continuousTrustedSeconds = snapshot.continuousTrustedSeconds
+			// A restored session has no preceding observation on this monotonic clock.
+			profile.continuousTrustedSeconds = 0.0
 			profile.residualMeanRadians = snapshot.residualMeanRadians
 			profile.residualVarianceRadiansSquared = snapshot.residualVarianceRadiansSquared
 			profile.confidenceBaseline = snapshot.confidenceBaseline

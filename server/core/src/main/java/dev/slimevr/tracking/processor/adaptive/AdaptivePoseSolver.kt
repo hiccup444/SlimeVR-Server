@@ -15,6 +15,7 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 	private val optimizer = PoseOptimizer()
 	private val sensors = SensorStateManager()
 	private val confidence = TrackerConfidenceEstimator()
+	private val health = TrackerHealthEstimator()
 	private val bodyEvidence = BodyEvidenceEstimator()
 	private val recovery = mutableMapOf<Bone, OrientationRecovery>()
 	private val previous = mutableMapOf<Bone, Quaternion>()
@@ -45,6 +46,7 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		lastTime = null
 		sensors.reset()
 		confidence.reset()
+		health.reset()
 		bodyEvidence.reset()
 		recovery.clear()
 		diagnostic = null
@@ -99,7 +101,7 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 			listOf(s.chestTracker, s.leftUpperArmTracker, s.leftLowerArmTracker, s.leftHandTracker),
 			listOf(s.chestTracker, s.rightUpperArmTracker, s.rightLowerArmTracker, s.rightHandTracker),
 		).map { chain -> chain.mapNotNull { it?.id } }
-		val frame = bodyEvidence.observe(confidence.observe(sensors.sample(trackers, emptyList(), now)), chains)
+		val frame = bodyEvidence.observe(health.observe(confidence.observe(sensors.sample(trackers, emptyList(), now))), chains)
 		val samples = frame.samples.associateBy { it.id }
 		val continuous = lastTime?.let { now - it in 1..250_000_000L } == true
 		val highMotion = bodyEvidence.motion == AdaptiveMotionState.HIGH_MOTION || activity?.state == AdaptiveActivityState.HIGH_MOTION || activity?.state == AdaptiveActivityState.RUNNING

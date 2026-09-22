@@ -3,8 +3,8 @@ package dev.slimevr.tracking.processor.adaptive
 import io.github.axisangles.ktmath.Quaternion
 import io.github.axisangles.ktmath.Vector3
 import java.util.ArrayDeque
-import kotlin.math.acos
 import kotlin.math.abs
+import kotlin.math.acos
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -112,7 +112,7 @@ class TrackerHealthMonitor(private val maxTrackers: Int = 64) {
 			reasons.add("AGING_PACKET")
 		}
 		val acceleration = sample.acceleration
-		if (acceleration != null) {
+		if (acceleration != null && sample.accelerationAgeNanos?.let { it in 0..MAX_CONTEXT_AGE_NANOS } == true) {
 			val magnitudeSq = acceleration.x.toDouble() * acceleration.x + acceleration.y.toDouble() * acceleration.y + acceleration.z.toDouble() * acceleration.z
 			if (!magnitudeSq.isFinite() || sqrt(magnitudeSq) > MAX_ACCELERATION_METERS_PER_SECOND_SQUARED) {
 				target = min(target, INVALID_SENSOR_QUALITY)
@@ -149,7 +149,7 @@ class TrackerHealthMonitor(private val maxTrackers: Int = 64) {
 			context.timestampNanos?.let { nowNanos - it in 0..MAX_CONTEXT_AGE_NANOS } == true
 		val change = rotationChange
 		val unchanged = continuous && change != null && change.angle <= UNCHANGED_ANGLE_EPSILON
-		if (unchanged) {
+		if (unchanged && independentMotion && packetAgeNanos <= FRESH_PACKET_NANOS) {
 			if (history.unchangedSince == null) history.unchangedSince = nowNanos
 		} else {
 			history.unchangedSince = null

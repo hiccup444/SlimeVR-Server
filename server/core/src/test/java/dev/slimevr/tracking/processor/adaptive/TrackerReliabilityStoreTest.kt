@@ -20,7 +20,7 @@ class TrackerReliabilityStoreTest {
 			assertTrue(file.fileName.toString().matches(Regex("reliability-[0-9a-f]{64}\\.json")))
 			assertFalse(Files.readString(file).contains(key))
 			val loaded = store.load(key).get()
-			assertEquals(profile.snapshot(), loaded?.snapshot())
+			assertEquals(profile.snapshot().copy(continuousTrustedSeconds = 0.0), loaded?.snapshot())
 			assertTrue(loaded?.isMature == true)
 		}
 	}

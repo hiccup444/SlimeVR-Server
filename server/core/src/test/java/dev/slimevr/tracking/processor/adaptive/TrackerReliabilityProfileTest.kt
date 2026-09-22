@@ -27,6 +27,9 @@ class TrackerReliabilityProfileTest {
 		assertEquals(0.02, profile.currentTrustedSeconds, 1e-9)
 
 		assertTrue(profile.observe(0.1, 0.95, 200_000_000, true, true))
+		assertEquals(0.0, profile.currentContinuousSeconds)
+		assertEquals(0.02, profile.currentTrustedSeconds, 1e-9)
+		assertTrue(profile.observe(0.1, 0.95, 220_000_000, true, true))
 		assertEquals(0.02, profile.currentContinuousSeconds, 1e-9)
 		assertEquals(0.04, profile.currentTrustedSeconds, 1e-9)
 	}
@@ -38,7 +41,6 @@ class TrackerReliabilityProfileTest {
 		assertFalse(profile.observe(Double.NaN, 0.9, 20_000_000, true, true))
 		assertFalse(profile.observe(Math.PI + 0.01, 0.9, 30_000_000, true, true))
 		assertFalse(profile.observe(0.1, Double.POSITIVE_INFINITY, 40_000_000, true, true))
-		assertFalse(profile.observe(0.1, 0.9, -1, true, true))
 		assertNotNull(profile.currentResidualMeanRadians)
 		assertEquals(0.15, profile.currentResidualMeanRadians!!, 1e-9)
 
@@ -85,8 +87,12 @@ class TrackerReliabilityProfileTest {
 		assertNotEquals("device:serial:tracker-4", profile.hardwareKeyHash)
 
 		val restored = TrackerReliabilityProfile.restore(profile.snapshot())
-		assertEquals(profile.snapshot(), restored.snapshot())
+		assertEquals(profile.snapshot().copy(continuousTrustedSeconds = 0.0), restored.snapshot())
 		assertTrue(restored.isMature)
+		assertTrue(restored.observe(0.2, 0.9, -1_000_000_000L, true, true))
+		assertEquals(0.0, restored.currentContinuousSeconds)
+		assertTrue(restored.observe(0.2, 0.9, -980_000_000L, true, true))
+		assertEquals(0.02, restored.currentContinuousSeconds, 1e-9)
 	}
 
 	@Test

@@ -21,6 +21,7 @@ import { Typography } from '@/components/commons/Typography';
 import { BugIcon } from '@/components/commons/icon/BugIcon';
 import { SettingsPagePaneLayout } from '@/components/settings/SettingsPageLayout';
 import { useWebsocketAPI } from '@/hooks/websocket-api';
+import { AdaptiveDebugPanel } from './AdaptiveDebugPanel';
 
 interface AdaptiveTrackingForm {
   telemetryEnabled: boolean;
@@ -238,6 +239,7 @@ function DiagnosticsView({ frame }: { frame: DiagnosticObject }) {
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {samples.map((sample, index) => {
           const confidence = asObject(sample.confidence);
+          const health = asObject(sample.health);
           return (
             <div
               className="rounded-md bg-background-60 p-3"
@@ -254,6 +256,11 @@ function DiagnosticsView({ frame }: { frame: DiagnosticObject }) {
                 )}{' '}
                 ms · temperature {format(sample.temperatureCelsius, 1)} °C
               </Typography>
+              {health ? (
+                <Typography>
+                  {`Sensor health ${format(health.qualityMultiplier)} · derived stationary confidence ${format(health.stationaryConfidence)}${health.suspectedFrozen === true ? ' · suspected frozen orientation' : ''}`}
+                </Typography>
+              ) : null}
               <Typography>
                 {Array.isArray(confidence?.reasons)
                   ? confidence.reasons
@@ -473,12 +480,13 @@ export function AdaptiveTrackingSettings() {
   const diagnosticsTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticObject | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState('');
-  const { control, handleSubmit, reset, watch } = useForm<AdaptiveTrackingForm>(
-    {
-      defaultValues: defaults,
-    }
-  );
-  const liveDiagnosticsEnabled = watch('liveDiagnosticsEnabled');
+  const { control, handleSubmit, reset } = useForm<AdaptiveTrackingForm>({
+    defaultValues: defaults,
+  });
+  const [confirmedSettings, setConfirmedSettings] =
+    useState<AdaptiveTrackingSettingsT | null>(null);
+  const liveDiagnosticsEnabled =
+    confirmedSettings?.liveDiagnosticsEnabled === AdaptiveBoolean.TRUE;
   const [saveState, setSaveState] = useState<
     'idle' | 'saving' | 'saved' | 'error'
   >('idle');
@@ -533,6 +541,7 @@ export function AdaptiveTrackingSettings() {
   useRPCPacket(RpcMessage.SettingsResponse, (settings: SettingsResponseT) => {
     const adaptive = settings.adaptiveTracking;
     if (!adaptive) return;
+    setConfirmedSettings(adaptive);
     reset({
       telemetryEnabled: adaptive.telemetryEnabled === AdaptiveBoolean.TRUE,
       confidenceDiagnosticsEnabled:
@@ -609,7 +618,7 @@ export function AdaptiveTrackingSettings() {
         new AdaptiveDiagnosticsRequestT()
       );
     request();
-    diagnosticsTimer.current = setInterval(request, 1000);
+    diagnosticsTimer.current = setInterval(request, 250);
     return () => {
       if (diagnosticsTimer.current) clearInterval(diagnosticsTimer.current);
       diagnosticsTimer.current = null;
@@ -696,6 +705,22 @@ export function AdaptiveTrackingSettings() {
   return (
     <SettingsPagePaneLayout icon={<BugIcon />} id="adaptive-tracking">
       <div className="flex flex-col gap-4">
+        <AdaptiveDebugPanel
+          frame={diagnostics}
+          connected={isConnected}
+          enabled={liveDiagnosticsEnabled}
+          settings={confirmedSettings}
+          onEnable={() => {
+            const adaptive = new AdaptiveTrackingSettingsPatchT();
+            adaptive.liveDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+            adaptive.confidenceDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+            adaptive.footContactDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+            const request = new ChangeSettingsRequestT();
+            request.adaptiveTracking = adaptive;
+            setSaveState('saving');
+            sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
+          }}
+        />
         <div>
           <Typography variant="main-title">
             {l10n.getString('settings-adaptive-tracking-title')}

@@ -140,6 +140,7 @@ private fun TelemetrySample.toRecord(): Map<String, Any?> = mapOf(
 	"positionExpected" to positionExpected,
 	"continuousObservation" to continuousObservation,
 	"confidence" to confidence,
+	"health" to health,
 )
 
 internal fun PoseSolverInput.toRecord() = mapOf(

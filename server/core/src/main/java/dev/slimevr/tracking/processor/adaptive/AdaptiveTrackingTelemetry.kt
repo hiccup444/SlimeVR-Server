@@ -7,6 +7,7 @@ import dev.slimevr.tracking.trackers.Tracker
 class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : AutoCloseable {
 	private val sensors = SensorStateManager()
 	private val confidence = TrackerConfidenceEstimator()
+	private val health = TrackerHealthEstimator()
 	private var recorder: AdaptiveTelemetryRecorder? = null
 	private var previousSampleNanos: Long? = null
 
@@ -41,9 +42,10 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 			activity = poseSolver?.activity,
 		)
 		val frame = if (config.confidenceDiagnosticsEnabled) {
-			confidence.observe(captured)
+			health.observe(confidence.observe(captured))
 		} else {
 			confidence.reset()
+			health.reset()
 			captured
 		}
 		latestFrame = frame
@@ -53,6 +55,7 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 	fun reset() {
 		sensors.reset()
 		confidence.reset()
+		health.reset()
 		previousSampleNanos = null
 		latestFrame = null
 	}
