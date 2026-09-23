@@ -44,9 +44,17 @@ const scenarios = [
     id: 'standing',
     name: 'Quiet standing',
     steps:
-      'Stand still for up to 30 minutes. Mark any visible drift or yaw reset.',
+      'Stand still for up to 30 minutes with both feet planted and both controllers resting. Mark visible drift and every yaw reset.',
     expect:
-      'Both feet should usually show planted; yaw bias should change slowly or stay still.',
+      'Both feet should usually show planted. Chest, hip, thigh, and ankle yaw learning needs at least 20 seconds of still, trusted evidence, and may remain paused. Any accepted bias should change slowly.',
+  },
+  {
+    id: 'slow-articulation',
+    name: 'Slow torso and leg movement',
+    steps:
+      'After a quiet standing period, slowly twist your torso or pivot one leg while keeping the headset and controllers as still as practical. Mark any apparent false correction.',
+    expect:
+      'Stationary-chain learning should pause when movement is observable. Very slow isolated movement may resemble drift, so note any yaw bias that changes in the wrong direction.',
   },
   {
     id: 'turns',

@@ -55,7 +55,7 @@ class StationaryChainYawIntegrationTest {
 
 		fun tracker(role: TrackerPosition) = trackers.first { it.trackerPosition == role }
 
-		fun step(index: Int, driftRole: TrackerPosition? = null, driftDegrees: Double = 0.0, bodyTurnDegrees: Double = 0.0, contactTrusted: Boolean = true, handOffset: Float = 0f, coherentDriftDegrees: Double = 0.0) {
+		fun step(index: Int, driftRole: TrackerPosition? = null, driftDegrees: Double = 0.0, bodyTurnDegrees: Double = 0.0, contactTrusted: Boolean = true, handOffset: Float = 0f, coherentDriftDegrees: Double = 0.0, fullPose: Boolean = false) {
 			val time = index * 100_000_000L
 			val bodyTurn = Quaternion.rotationAroundYAxis(Math.toRadians(bodyTurnDegrees).toFloat())
 			head.setRotation(bodyTurn)
@@ -69,10 +69,28 @@ class StationaryChainYawIntegrationTest {
 				if (tracker.trackerPosition == hardwareRole) tracker.setTemperature(20.5f, time)
 				tracker.dataTick(time)
 			}
-			pose.skeleton.legTweaks.adaptiveLeftFoot.update(Vector3.NULL, tracker(TrackerPosition.LEFT_FOOT).getRotationWithoutAdaptive(), 0f, Vector3.NULL, contactTrusted, time)
-			pose.skeleton.legTweaks.adaptiveRightFoot.update(Vector3.NULL, tracker(TrackerPosition.RIGHT_FOOT).getRotationWithoutAdaptive(), 0f, Vector3.NULL, contactTrusted, time)
-			pose.adaptiveEstimator.updateAbsoluteConstraints(pose.skeleton, time)
+			if (!fullPose) {
+				pose.skeleton.legTweaks.adaptiveLeftFoot.update(Vector3.NULL, tracker(TrackerPosition.LEFT_FOOT).getRotationWithoutAdaptive(), 0f, Vector3.NULL, contactTrusted, time)
+				pose.skeleton.legTweaks.adaptiveRightFoot.update(Vector3.NULL, tracker(TrackerPosition.RIGHT_FOOT).getRotationWithoutAdaptive(), 0f, Vector3.NULL, contactTrusted, time)
+			}
+			if (fullPose) pose.skeleton.updatePose(time) else pose.adaptiveEstimator.updateAbsoluteConstraints(pose.skeleton, time)
 		}
+	}
+
+	@Test
+	fun fullPoseTickAppliesStationaryChainBiasWithoutChangingRawImuData() {
+		val fixture = Fixture()
+		fixture.pose.adaptiveTrackingConfig.poseOptimizerEnabled = true
+		fixture.pose.skeleton.legTweaks.resetFloorLevel()
+		val hip = fixture.tracker(TrackerPosition.HIP)
+		for (index in 0..600) {
+			fixture.step(index, TrackerPosition.HIP, index * 0.001, fullPose = true)
+			assertEquals(Quaternion.rotationAroundYAxis(Math.toRadians(index * 0.001).toFloat()), hip.getRawRotation())
+		}
+		assertTrue(hip.adaptiveYawBiasRadians > Math.toRadians(0.15), "${fixture.pose.adaptiveEstimator.diagnostics.first { it.trackerId == hip.id }}")
+		assertTrue(hip.getRotation().angleToR(hip.getRotationWithoutAdaptive()) > Math.toRadians(0.15))
+		assertTrue(fixture.pose.skeleton.hipBone.getGlobalRotation().lenSq().isFinite())
+		assertEquals("STATIONARY_CHAIN_INCREMENTAL_ONLY", fixture.pose.adaptiveEstimator.diagnostics.first { it.trackerId == hip.id }.correctionMode)
 	}
 
 	@Test
