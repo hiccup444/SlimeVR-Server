@@ -28,6 +28,7 @@ data class TrackerDriftDiagnostic(
 /** Coordinates evidence-gated calibration separately from immediate pose constraints. */
 class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCloseable {
 	private val absoluteArms = AbsoluteArmYawEstimator(config)
+	private val stationaryChains = StationaryChainYawEstimator(config)
 	private var calibration: CalibrationLearner? = null
 	private var reliability: TrackerReliabilityLearner? = null
 	private fun reliabilityLearner(): TrackerReliabilityLearner = reliability ?: TrackerReliabilityLearner(
@@ -84,15 +85,18 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 
 	fun updateAbsoluteConstraints(skeleton: HumanSkeleton, now: Long) {
 		absoluteArms.update(skeleton, now, ::observeCalibration)
-		val measured = (footDiagnostics + absoluteArms.diagnostics).associateBy { it.trackerId }
+		stationaryChains.update(skeleton, now, ::observeCalibration)
+		val measured = (footDiagnostics + absoluteArms.diagnostics + stationaryChains.diagnostics).associateBy { it.trackerId }
 		val trackers = skeleton.allHumanBones.mapNotNull { it.attachedTracker }.filter { it.isImu() }.distinctBy { it.id }
 		learningStatistics.keys.retainAll(trackers.map { it.id }.toSet())
 		diagnostics = trackers.map { tracker ->
 			val foot = tracker.trackerPosition == TrackerPosition.LEFT_FOOT || tracker.trackerPosition == TrackerPosition.RIGHT_FOOT
 			val arm = tracker.trackerPosition == TrackerPosition.LEFT_UPPER_ARM || tracker.trackerPosition == TrackerPosition.RIGHT_UPPER_ARM
+			val stationaryChain = tracker.trackerPosition in STATIONARY_CHAIN_ROLES
 			val mode = when {
 				foot -> "PLANTED_REFERENCE_INCREMENTAL_ONLY"
 				arm -> "ABSOLUTE_ARM_REACH"
+				stationaryChain -> "STATIONARY_CHAIN_INCREMENTAL_ONLY"
 				else -> "NO_INDEPENDENT_YAW_MODEL"
 			}
 			val blocked = when {
@@ -103,7 +107,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 				skeleton.localizer.getEnabled() -> "BLOCKED_BY_LOCALIZER"
 				arm && config.armCalibrationMode != "disabled" -> "BLOCKED_BY_ARM_CALIBRATION"
 				tracker.resetsHandler.isDriftCompensationActive -> "BLOCKED_BY_LEGACY_DRIFT_COMPENSATION"
-				!foot && !arm -> "NO_INDEPENDENT_YAW_MODEL"
+				!foot && !arm && !stationaryChain -> "NO_INDEPENDENT_YAW_MODEL"
 				else -> null
 			}
 			val item = if (blocked == null) measured[tracker.id] else null
@@ -136,6 +140,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 
 	fun reset() {
 		absoluteArms.reset()
+		stationaryChains.reset()
 		calibration?.resetTransient()
 		reliability?.resetTransient()
 		states.values.forEach { it.tracker.adaptiveYawBiasRadians = 0f }
@@ -273,6 +278,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 		if (!config.yawCorrectionStrength.isFinite() || config.yawCorrectionStrength <= 0f) return "CORRECTION_STRENGTH_ZERO"
 		when (tracker.trackerPosition) {
 			TrackerPosition.LEFT_FOOT, TrackerPosition.RIGHT_FOOT, TrackerPosition.LEFT_UPPER_ARM, TrackerPosition.RIGHT_UPPER_ARM -> {}
+			in STATIONARY_CHAIN_ROLES -> {}
 			else -> return "NO_INDEPENDENT_YAW_MODEL"
 		}
 		if (!config.temperatureLearningEnabled) return "DISABLED"
@@ -297,6 +303,16 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 
 private fun finite(v: Vector3) = v.x.isFinite() && v.y.isFinite() && v.z.isFinite()
 private val FOOT_HOLDOVER_LIMIT = Math.toRadians(0.25).toFloat()
+private val STATIONARY_CHAIN_ROLES = setOf(
+	TrackerPosition.UPPER_CHEST,
+	TrackerPosition.CHEST,
+	TrackerPosition.WAIST,
+	TrackerPosition.HIP,
+	TrackerPosition.LEFT_UPPER_LEG,
+	TrackerPosition.RIGHT_UPPER_LEG,
+	TrackerPosition.LEFT_LOWER_LEG,
+	TrackerPosition.RIGHT_LOWER_LEG,
+)
 private fun heading(q: Quaternion): Float? {
 	if (!q.w.isFinite() || !q.x.isFinite() || !q.y.isFinite() || !q.z.isFinite() || !q.lenSq().isFinite() || q.lenSq() <= 0f) return null
 	val forward = q.unit().sandwich(Vector3(0f, 0f, 1f))

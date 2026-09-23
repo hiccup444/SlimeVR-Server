@@ -75,5 +75,6 @@ internal class TrackerReliabilityLearner(private val store: TrackerReliabilitySt
 			entries.clear()
 		}
 		store.close()
+		store.awaitClosed(5_000)
 	}
 }

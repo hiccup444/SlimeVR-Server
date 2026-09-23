@@ -198,6 +198,7 @@ class CalibrationLearner(
 			}
 		}
 		store.close()
+		store.awaitClosed(5_000)
 	}
 
 	companion object {

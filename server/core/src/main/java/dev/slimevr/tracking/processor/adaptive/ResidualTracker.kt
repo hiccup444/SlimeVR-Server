@@ -6,7 +6,7 @@ import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.sin
 
-enum class DriftEvidenceSource { ABSOLUTE_POSITION_CONSTRAINT, PLANTED_CONTACT_WITH_STABLE_CHAIN, JOINT_PRIOR }
+enum class DriftEvidenceSource { ABSOLUTE_POSITION_CONSTRAINT, PLANTED_CONTACT_WITH_STABLE_CHAIN, STATIONARY_CHAIN_REFERENCE, JOINT_PRIOR }
 
 /** Residuals are measured before this subsystem's yaw correction; angles are radians. */
 data class DriftEvidence(

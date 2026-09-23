@@ -98,7 +98,7 @@ const scenarios = [
     steps:
       'Compare a cold start with a session after the trackers have warmed.',
     expect:
-      'Temperature is recorded when available; unsupported yaw roles should not learn bias.',
+      'Temperature is recorded when available; learned rates need long trusted observations before helping.',
   },
 ] as const;
 
@@ -876,7 +876,10 @@ export function AdaptiveDebugPanel({
                   {String(object(item.learning).contextRestarts ?? 0)}
                   {item.correctionMode === 'PLANTED_REFERENCE_INCREMENTAL_ONLY'
                     ? ' · Resists new drift during contact; does not establish absolute foot heading.'
-                    : ''}
+                    : item.correctionMode ===
+                        'STATIONARY_CHAIN_INCREMENTAL_ONLY'
+                      ? ' · Resists new drift only while the headset, both controllers, and planted feet stay still. Does not establish an absolute heading.'
+                      : ''}
                 </p>
               </div>
             ))}
