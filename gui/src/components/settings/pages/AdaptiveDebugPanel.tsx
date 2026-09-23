@@ -284,7 +284,10 @@ export function AdaptiveDebugPanel({
     : [];
   const recordingActive = recording.active === true;
   const recordingRequested =
-    object(settings).telemetryEnabled === true || recording.requested === true;
+    object(settings).telemetryEnabled === true ||
+    recording.requested === true ||
+    recording.active === true ||
+    recording.finalizing === true;
   const writtenFrames = numeric(recording.writtenFrames) ?? 0;
   const droppedFrames = numeric(recording.droppedFrames) ?? 0;
 
@@ -361,7 +364,10 @@ export function AdaptiveDebugPanel({
     if (!stopping) return;
     if (
       connected &&
-      (!frame || recording.requested === true || recording.finalizing === true)
+      (!frame ||
+        recording.requested === true ||
+        recording.active === true ||
+        recording.finalizing === true)
     )
       return;
     completedSessionRef.current = sessionRef.current;
@@ -552,7 +558,12 @@ export function AdaptiveDebugPanel({
         </Button>
         <Button
           variant="primary"
-          disabled={!connected || session !== null || recordingRequested}
+          disabled={
+            !connected ||
+            settings === null ||
+            session !== null ||
+            recordingRequested
+          }
           onClick={startSession}
         >
           Start recorded test
@@ -570,8 +581,8 @@ export function AdaptiveDebugPanel({
       </div>
       {session === null && recordingRequested && (
         <p role="alert" className="text-sm">
-          A server recording is already running. Stop it in the settings below
-          before starting a separate test trial.
+          A server recording is running or finalizing. Stop it in the settings
+          below and wait for it to finish before starting a separate test trial.
         </p>
       )}
       <p className="text-sm">
