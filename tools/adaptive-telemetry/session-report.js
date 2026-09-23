@@ -89,7 +89,7 @@ function integrity(frames, expectedHz) {
   const positive = [];
   let reversals = 0;
   let resetTransitions = 0;
-  let droppedFrames = 0;
+  let droppedFrames = Math.max(0, frames[0]?.droppedFrames || 0);
   for (let index = 1; index < frames.length; index++) {
     const previous = frames[index - 1]; const current = frames[index];
     const dt = current.frame.timestampNanos - previous.frame.timestampNanos;

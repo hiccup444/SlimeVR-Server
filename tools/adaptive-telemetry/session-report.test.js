@@ -39,6 +39,7 @@ try {
   assert.equal(result.solverTiming.samples, 0);
   assert.equal(integrity([frames[0], frames[20]], 50).gaps.length, 1);
   assert.equal(integrity([frames[1], frames[0]], 50).nonIncreasingTimestamps, 1);
+  assert.equal(integrity([{ ...frames[0], droppedFrames: 3 }, { ...frames[1], droppedFrames: 5 }], 50).droppedFrames, 5);
   assert.equal(readNotes(notesFile).records.length, 3);
   const feature = { ...result, condition: "Feature on", session: { ...result.session, condition: "Feature on" } };
   assert.equal(compare(result, feature).baseline.plantedFootSlideMetersPerSecond, 0);
