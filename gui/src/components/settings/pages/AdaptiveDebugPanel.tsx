@@ -151,6 +151,7 @@ export function AdaptiveDebugPanel({
   const sessionRef = useRef<TestSession | null>(null);
   const completedSessionRef = useRef<TestSession | null>(null);
   const completedRecordingFilesRef = useRef<string[]>([]);
+  const lastRecordingFilesRef = useRef<string[]>([]);
   const previousState = useRef('');
   const previousRecordingState = useRef('');
 
@@ -288,6 +289,11 @@ export function AdaptiveDebugPanel({
   const droppedFrames = numeric(recording.droppedFrames) ?? 0;
 
   useEffect(() => {
+    if (recordingFiles.length > 0)
+      lastRecordingFilesRef.current = recordingFiles;
+  }, [frame]);
+
+  useEffect(() => {
     if (!frame) return;
     const state = JSON.stringify({
       active: recording.active,
@@ -333,6 +339,7 @@ export function AdaptiveDebugPanel({
     sessionRef.current = next;
     completedSessionRef.current = null;
     completedRecordingFilesRef.current = [];
+    lastRecordingFilesRef.current = [];
     setSession(next);
     setStopping(false);
     append({ type: 'session-start', ...next, settings });
@@ -351,20 +358,22 @@ export function AdaptiveDebugPanel({
   }
 
   useEffect(() => {
+    if (!stopping) return;
     if (
-      !stopping ||
-      !frame ||
-      recording.requested === true ||
-      recording.finalizing === true
+      connected &&
+      (!frame || recording.requested === true || recording.finalizing === true)
     )
       return;
-    completedRecordingFilesRef.current = recordingFiles;
-    download();
     completedSessionRef.current = sessionRef.current;
+    completedRecordingFilesRef.current =
+      recordingFiles.length > 0
+        ? recordingFiles
+        : lastRecordingFilesRef.current;
     sessionRef.current = null;
+    download();
     setSession(null);
     setStopping(false);
-  }, [frame, stopping]);
+  }, [frame, stopping, connected]);
 
   function mark() {
     const message = note.trim() || 'Visible tracking problem';
@@ -408,7 +417,9 @@ export function AdaptiveDebugPanel({
         session: exportedSession,
         serverRecordingFiles:
           sessionRef.current || !completedSessionRef.current
-            ? recordingFiles
+            ? recordingFiles.length > 0
+              ? recordingFiles
+              : lastRecordingFilesRef.current
             : completedRecordingFilesRef.current,
         settings,
         note: 'UI diagnostics sampled every five seconds and at each marker. Send this log together with every server recording part. Neither contains raw IMU packets.',
