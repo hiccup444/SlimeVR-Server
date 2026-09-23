@@ -121,6 +121,21 @@ class SensorStateManagerTest {
 	}
 
 	@Test
+	fun futureDatedPacketIsRejectedByHealthAndDoesNotSeedMotion() {
+		val tracker = tracker(timeout = true)
+		tracker.dataTick(200_000_000L)
+		val manager = SensorStateManager()
+		val future = manager.sample(listOf(tracker), emptyList(), 100_000_000L)
+		assertEquals(-100_000_000L, future.samples.single().packetAgeNanos)
+		assertTrue(!future.samples.single().continuousObservation)
+		val health = TrackerHealthEstimator().observe(TrackerConfidenceEstimator().observe(future)).samples.single().health
+		assertEquals(0f, health?.qualityMultiplier)
+		assertTrue("INVALID_PACKET_AGE" in health!!.reasons)
+		val recovered = manager.sample(listOf(tracker), emptyList(), 200_000_000L).samples.single()
+		assertNull(recovered.angularSpeedRadiansPerSecond)
+	}
+
+	@Test
 	fun reusedIdsAndChangedDesignationDoNotInheritHistory() {
 		val manager = SensorStateManager()
 		val original = tracker()

@@ -53,8 +53,8 @@ class SensorStateManager(
 		val position = if (tracker.hasPosition) tracker.position.takeIf(::finite) else null
 		val acceleration = if (tracker.hasAcceleration) tracker.getAcceleration().takeIf(::finite) else null
 		val temperature = tracker.temperature?.takeIf { it.isFinite() }
-		val packetAge = tracker.lastRotationUpdateNanos?.let { (now - it).takeIf { age -> age >= 0L } }
-		val fresh = if (tracker.lastRotationUpdateNanos != null) packetAge != null && packetAge <= maxGapNanos else !tracker.usesTimeout
+		val packetAge = tracker.lastRotationUpdateNanos?.let { now - it }
+		val fresh = if (tracker.lastRotationUpdateNanos != null) packetAge != null && packetAge in 0..maxGapNanos else !tracker.usesTimeout
 		val usable = tracker.status.sendData && fresh && (!tracker.hasRotation || adjusted != null) && (!tracker.hasPosition || position != null)
 		val prior = previous[key]?.takeIf {
 			it.tracker === tracker &&
