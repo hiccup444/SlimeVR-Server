@@ -541,7 +541,7 @@ export function AdaptiveDebugPanel({
         </Button>
         <Button
           variant="primary"
-          disabled={!connected || session !== null}
+          disabled={!connected || session !== null || recordingRequested}
           onClick={startSession}
         >
           Start recorded test
@@ -557,6 +557,12 @@ export function AdaptiveDebugPanel({
           Export notes again
         </Button>
       </div>
+      {session === null && recordingRequested && (
+        <p role="alert" className="text-sm">
+          A server recording is already running. Stop it in the settings below
+          before starting a separate test trial.
+        </p>
+      )}
       <p className="text-sm">
         A recorded test saves server telemetry at the selected sample rate and a
         separate UI note log. The UI log holds up to 64 MiB or 10,000 entries
