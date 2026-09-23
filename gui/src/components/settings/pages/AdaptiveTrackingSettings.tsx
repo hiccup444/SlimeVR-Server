@@ -524,6 +524,7 @@ export function AdaptiveTrackingSettings() {
         new SettingsRequestT()
       );
     } else {
+      setConfirmedSettings(null);
       setSaveState((current) => (current === 'saving' ? 'error' : current));
       setClearState((current) => (current === 'clearing' ? 'error' : current));
     }
