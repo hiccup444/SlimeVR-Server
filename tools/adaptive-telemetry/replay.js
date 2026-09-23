@@ -10,6 +10,14 @@ const MAX_LINE = 1024 * 1024;
 
 function finite(value) { return typeof value === "number" && Number.isFinite(value); }
 function vec(value) { return value && finite(value.x) && finite(value.y) && finite(value.z) ? value : null; }
+function orientationStep(a, b) {
+  if (![a?.w, a?.x, a?.y, a?.z, b?.w, b?.x, b?.y, b?.z].every(finite)) return null;
+  const aNorm = Math.hypot(a.w, a.x, a.y, a.z); const bNorm = Math.hypot(b.w, b.x, b.y, b.z);
+  if (!finite(aNorm) || !finite(bNorm) || aNorm < 1e-6 || bNorm < 1e-6) return null;
+  const dot = Math.abs(a.w*b.w + a.x*b.x + a.y*b.y + a.z*b.z) / (aNorm*bNorm);
+  if (!finite(dot)) return null;
+  return 2 * Math.acos(Math.min(1, Math.max(0, dot)));
+}
 function trackerSamples(frame) {
   return [...(Array.isArray(frame.samples) ? frame.samples : []), ...(Array.isArray(frame.computedSamples) ? frame.computedSamples : [])];
 }
@@ -52,6 +60,7 @@ function parseRecording(text) {
 function evaluate(recording) {
   const trackerStats = new Map();
   const driftStats = new Map();
+  const poseResidualStats = new Map();
   const transitions = [];
   let usableSeconds = 0;
   let comparedIntervals = 0;
@@ -72,8 +81,10 @@ function evaluate(recording) {
     for (const sample of trackerSamples(frame)) {
       const group = frame.samples.includes(sample) ? "input" : "output";
       const id = `${group}:${String(sample.id)}`;
-      if (!trackerStats.has(id)) trackerStats.set(id, { id, name: String(sample.name ?? sample.id), role: sample.role ?? null, group, footSlideMeters: 0, plantedSeconds: 0, plantedIntervals: 0, validAngularSamples: 0, linearAccelerations: [], angularSpeedSecondDerivatives: [], previousAngularAcceleration: null });
+      if (!trackerStats.has(id)) trackerStats.set(id, { id, name: String(sample.name ?? sample.id), role: sample.role ?? null, group, footSlideMeters: 0, plantedSeconds: 0, plantedIntervals: 0, validAngularSamples: 0, lowConfidenceFrames: 0, healthReasons: new Map(), maxPositionStepMeters: null, maxPositionStepTimestampNanos: null, maxOrientationStepRadians: null, maxOrientationStepTimestampNanos: null, linearAccelerations: [], angularSpeedSecondDerivatives: [], previousAngularAcceleration: null });
       const stats = trackerStats.get(id);
+      if (finite(sample.confidence?.score) && sample.confidence.score < 0.5) stats.lowConfidenceFrames++;
+      for (const reason of Array.isArray(sample.health?.reasons) ? sample.health.reasons : []) if (typeof reason === "string" && reason !== "HEALTHY") stats.healthReasons.set(reason, (stats.healthReasons.get(reason) || 0) + 1);
       const valid = sample.status === "OK" && sample.continuousObservation === true;
       const p = vec(sample.position);
       const velocity = vec(sample.derivedLinearVelocity);
@@ -86,6 +97,14 @@ function evaluate(recording) {
         const dt = time - prior.time;
         if (dt <= 0.5) {
           comparedIntervals++;
+          if (group === "output") {
+            if (p && prior.p) {
+              const step = Math.hypot(p.x-prior.p.x, p.y-prior.p.y, p.z-prior.p.z);
+              if (stats.maxPositionStepMeters === null || step > stats.maxPositionStepMeters) { stats.maxPositionStepMeters = step; stats.maxPositionStepTimestampNanos = frame.timestampNanos; }
+            }
+            const step = orientationStep(sample.adjustedRotation, prior.sample.adjustedRotation);
+            if (step !== null && (stats.maxOrientationStepRadians === null || step > stats.maxOrientationStepRadians)) { stats.maxOrientationStepRadians = step; stats.maxOrientationStepTimestampNanos = frame.timestampNanos; }
+          }
           if (prior.velocity && velocity) stats.linearAccelerations.push(Math.hypot(velocity.x-prior.velocity.x, velocity.y-prior.velocity.y, velocity.z-prior.velocity.z) / dt);
           if (prior.angular !== null && angular !== null) {
             const accel = (angular-prior.angular)/dt;
@@ -98,12 +117,13 @@ function evaluate(recording) {
     for (const diagnostic of Array.isArray(frame.driftDiagnostics) ? frame.driftDiagnostics : []) {
       if (!diagnostic || diagnostic.trackerId == null) continue;
       const id = String(diagnostic.trackerId);
-      if (!driftStats.has(id)) driftStats.set(id, { trackerId: id, count: 0, eligibleFrames: 0, holdoverFrames: 0, reasons: new Map(), errors: [], filteredErrors: [], consistentSeconds: [], totalAbsoluteBiasChangeRadians: 0, correctionObservedSeconds: 0, maxCorrectionRateRadiansPerSecond: null, priorBias: null });
+      if (!driftStats.has(id)) driftStats.set(id, { trackerId: id, count: 0, eligibleFrames: 0, holdoverFrames: 0, reasons: new Map(), temperatureModelStatuses: new Map(), errors: [], filteredErrors: [], consistentSeconds: [], totalAbsoluteBiasChangeRadians: 0, correctionObservedSeconds: 0, maxCorrectionRateRadiansPerSecond: null, priorBias: null });
       const stat = driftStats.get(id);
       stat.count++;
       if (diagnostic.residual?.eligibleForLearning === true) stat.eligibleFrames++;
       if (diagnostic.holdoverActive === true) stat.holdoverFrames++;
       if (typeof diagnostic.residual?.reason === "string") stat.reasons.set(diagnostic.residual.reason, (stat.reasons.get(diagnostic.residual.reason) || 0) + 1);
+      if (typeof diagnostic.temperatureModelStatus === "string") stat.temperatureModelStatuses.set(diagnostic.temperatureModelStatus, (stat.temperatureModelStatuses.get(diagnostic.temperatureModelStatus) || 0) + 1);
       if (finite(diagnostic.residual?.consistentSeconds)) stat.consistentSeconds.push(diagnostic.residual.consistentSeconds);
       if (finite(diagnostic.residual?.errorRadians)) stat.errors.push(diagnostic.residual.errorRadians);
       if (finite(diagnostic.residual?.filteredErrorRadians)) stat.filteredErrors.push(diagnostic.residual.filteredErrorRadians);
@@ -118,6 +138,17 @@ function evaluate(recording) {
         }
         stat.priorBias = { bias: diagnostic.biasRadians, time, epoch, dropped };
       } else stat.priorBias = null;
+    }
+    for (const [id, prediction] of Object.entries(frame.trackerPredictions || {})) {
+      const residual = prediction?.residual;
+      if (!finite(residual?.magnitudeRadians) || residual.magnitudeRadians < 0) continue;
+      if (!poseResidualStats.has(id)) poseResidualStats.set(id, { trackerId: id, count: 0, sum: 0, max: 0, independentFrames: 0, reasons: new Map() });
+      const stat = poseResidualStats.get(id);
+      stat.count++;
+      stat.sum += residual.magnitudeRadians;
+      stat.max = Math.max(stat.max, residual.magnitudeRadians);
+      if (residual.independentlyConstrained === true) stat.independentFrames++;
+      if (typeof residual.reason === "string") stat.reasons.set(residual.reason, (stat.reasons.get(residual.reason) || 0) + 1);
     }
     if (frameInterval) {
       for (const [id, sample] of current) if (sample.valid && sample.sample.status === "OK") {
@@ -148,12 +179,14 @@ function evaluate(recording) {
     meanAngularSpeedSecondDerivativeRadiansPerSecondCubed: mean(stats.angularSpeedSecondDerivatives),
     maxAngularSpeedSecondDerivativeRadiansPerSecondCubed: max(stats.angularSpeedSecondDerivatives),
     meanFootSlideMetersPerSecond: stats.plantedSeconds ? stats.footSlideMeters / stats.plantedSeconds : null,
+    healthReasons: Object.fromEntries(stats.healthReasons),
     linearAccelerations: undefined,
     angularSpeedSecondDerivatives: undefined,
     previousAngularAcceleration: undefined,
   }));
-  const driftDiagnostics = [...driftStats.values()].map((stat) => ({ trackerId: stat.trackerId, diagnosticFrames: stat.count, eligibleFrames: stat.eligibleFrames, holdoverFrames: stat.holdoverFrames, totalAbsoluteBiasChangeRadians: stat.totalAbsoluteBiasChangeRadians, correctionObservedSeconds: stat.correctionObservedSeconds, meanAbsoluteCorrectionRateRadiansPerSecond: stat.correctionObservedSeconds ? stat.totalAbsoluteBiasChangeRadians / stat.correctionObservedSeconds : null, maxCorrectionRateRadiansPerSecond: stat.maxCorrectionRateRadiansPerSecond, meanErrorRadians: mean(stat.errors), meanFilteredErrorRadians: mean(stat.filteredErrors), meanConsistentSeconds: mean(stat.consistentSeconds), reasons: Object.fromEntries(stat.reasons) }));
-  return { evaluationScope: "recorded-output telemetry; this is not a full solver rerun or raw-packet replay", metricNotes: ["Foot slide is horizontal computed-position distance per second only across adjacent valid PLANTED samples with the same plant position.", "Linear acceleration is derived from changes in recorded derivedLinearVelocity.", "Angular-speed second derivative is based on scalar angular-speed telemetry; it is not a 3D angular jerk vector.", "Yaw correction movement excludes reset epochs, dropped-frame changes, non-forward timestamps, and gaps over 0.5 seconds. It measures applied bias changes, not physical drift accuracy."], frameCount: recording.frames.length, usableSeconds, comparedIntervals, resetCount, droppedFrameTransitions: recording.frames.reduce((n, f, i, all) => n + (i > 0 && (f.droppedFrames || 0) > (all[i-1].droppedFrames || 0) ? 1 : 0), 0), trackers, driftDiagnostics, transitions };
+  const driftDiagnostics = [...driftStats.values()].map((stat) => ({ trackerId: stat.trackerId, diagnosticFrames: stat.count, eligibleFrames: stat.eligibleFrames, holdoverFrames: stat.holdoverFrames, totalAbsoluteBiasChangeRadians: stat.totalAbsoluteBiasChangeRadians, correctionObservedSeconds: stat.correctionObservedSeconds, meanAbsoluteCorrectionRateRadiansPerSecond: stat.correctionObservedSeconds ? stat.totalAbsoluteBiasChangeRadians / stat.correctionObservedSeconds : null, maxCorrectionRateRadiansPerSecond: stat.maxCorrectionRateRadiansPerSecond, meanErrorRadians: mean(stat.errors), meanFilteredErrorRadians: mean(stat.filteredErrors), meanConsistentSeconds: mean(stat.consistentSeconds), reasons: Object.fromEntries(stat.reasons), temperatureModelStatuses: Object.fromEntries(stat.temperatureModelStatuses) }));
+  const poseResiduals = [...poseResidualStats.values()].map(stat => ({ trackerId: stat.trackerId, diagnosticFrames: stat.count, meanMagnitudeRadians: stat.sum / stat.count, maxMagnitudeRadians: stat.max, independentlyConstrainedFrames: stat.independentFrames, reasons: Object.fromEntries(stat.reasons) }));
+  return { evaluationScope: "recorded-output telemetry; this is not a full solver rerun or raw-packet replay", metricNotes: ["Foot slide is horizontal computed-position distance per second only across adjacent valid PLANTED samples with the same plant position.", "Linear acceleration is derived from changes in recorded derivedLinearVelocity.", "Angular-speed second derivative is based on scalar angular-speed telemetry; it is not a 3D angular jerk vector.", "Yaw correction movement excludes reset epochs, dropped-frame changes, non-forward timestamps, and gaps over 0.5 seconds. It measures applied bias changes, not physical drift accuracy.", "Pose residuals compare recorded solver expectations with measured rotations; the expectations can use the same trackers and do not establish independent tracking error.", "Largest output steps use adjacent valid samples within one reset epoch and at most 0.5 seconds apart. They describe movement, not confirmed pose snaps."], frameCount: recording.frames.length, usableSeconds, comparedIntervals, resetCount, droppedFrameTransitions: recording.frames.reduce((n, f, i, all) => n + (i > 0 && (f.droppedFrames || 0) > (all[i-1].droppedFrames || 0) ? 1 : 0), 0), trackers, driftDiagnostics, poseResiduals, transitions };
 }
 function mean(values) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; }
 function max(values) { let result = null; for (const value of values) if (result === null || value > result) result = value; return result; }

@@ -18,6 +18,26 @@ const degrees = (value: unknown) => {
     ? 'unavailable'
     : `${((number * 180) / Math.PI).toFixed(2)}°`;
 };
+const heading = (value: unknown) => {
+  const rotation = object(value);
+  const w = numeric(rotation.w);
+  const x = numeric(rotation.x);
+  const y = numeric(rotation.y);
+  const z = numeric(rotation.z);
+  if (w === null || x === null || y === null || z === null)
+    return 'unavailable';
+  const norm = w * w + x * x + y * y + z * z;
+  if (!Number.isFinite(norm) || norm < 1e-12) return 'unavailable';
+  const horizontalX = (2 * (x * z + w * y)) / norm;
+  const horizontalZ = 1 - (2 * (x * x + y * y)) / norm;
+  if (
+    !Number.isFinite(horizontalX) ||
+    !Number.isFinite(horizontalZ) ||
+    horizontalX * horizontalX + horizontalZ * horizontalZ < 0.1
+  )
+    return 'unavailable';
+  return `${((Math.atan2(horizontalX, horizontalZ) * 180) / Math.PI).toFixed(1)}°`;
+};
 
 const scenarios = [
   {
@@ -110,11 +130,13 @@ export function AdaptiveDebugPanel({
   onStartRecording: () => void;
   onStopRecording: () => void;
 }) {
-  const buffer = useRef<{ line: string; bytes: number }[]>([]);
+  const buffer = useRef<{ line: string; bytes: number; type: string }[]>([]);
   const bytes = useRef(0);
   const removed = useRef(0);
   const lastFrame = useRef<RecordValue | null>(null);
   const lastTimestamp = useRef<string | null>(null);
+  const lastFrameReceivedAt = useRef<string | null>(null);
+  const lastSnapshotLoggedMs = useRef(0);
   const [history, setHistory] = useState<number[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [lastReceived, setLastReceived] = useState(0);
@@ -127,6 +149,8 @@ export function AdaptiveDebugPanel({
   const [session, setSession] = useState<TestSession | null>(null);
   const [stopping, setStopping] = useState(false);
   const sessionRef = useRef<TestSession | null>(null);
+  const completedSessionRef = useRef<TestSession | null>(null);
+  const completedRecordingFilesRef = useRef<string[]>([]);
   const previousState = useRef('');
   const previousRecordingState = useRef('');
 
@@ -134,10 +158,21 @@ export function AdaptiveDebugPanel({
     const line = JSON.stringify(value);
     const size = new TextEncoder().encode(line).length + 1;
     if (size > 64 * 1024 * 1024) return;
-    buffer.current.push({ line, bytes: size });
+    buffer.current.push({
+      line,
+      bytes: size,
+      type: String(object(value).type ?? ''),
+    });
     bytes.current += size;
     while (bytes.current > 64 * 1024 * 1024 || buffer.current.length > 10000) {
-      bytes.current -= buffer.current.shift()!.bytes;
+      const oldestFrame = buffer.current.findIndex(
+        (entry) => entry.type === 'frame'
+      );
+      const removedEntry = buffer.current.splice(
+        oldestFrame >= 0 ? oldestFrame : 0,
+        1
+      )[0];
+      bytes.current -= removedEntry.bytes;
       removed.current++;
     }
   }
@@ -159,6 +194,7 @@ export function AdaptiveDebugPanel({
     if (!connected || !enabled) {
       lastTimestamp.current = null;
       lastFrame.current = null;
+      lastFrameReceivedAt.current = null;
       setLastReceived(0);
     }
     append({
@@ -176,8 +212,13 @@ export function AdaptiveDebugPanel({
     if (timestamp === lastTimestamp.current) return;
     lastTimestamp.current = timestamp;
     const receivedAt = new Date().toISOString();
-    setLastReceived(Date.now());
-    append({ type: 'frame', receivedAt, frame });
+    const receivedAtMs = Date.now();
+    setLastReceived(receivedAtMs);
+    lastFrameReceivedAt.current = receivedAt;
+    if (receivedAtMs - lastSnapshotLoggedMs.current >= 5000) {
+      append({ type: 'frame', receivedAt, frame });
+      lastSnapshotLoggedMs.current = receivedAtMs;
+    }
     const samples = Array.isArray(frame.samples)
       ? frame.samples.map(object)
       : [];
@@ -197,9 +238,17 @@ export function AdaptiveDebugPanel({
     });
     const problems = samples.flatMap((sample) => {
       const health = object(sample.health);
-      const reasons = Array.isArray(health.reasons)
-        ? health.reasons.filter((reason) => reason !== 'HEALTHY')
-        : [];
+      const confidence = object(sample.confidence);
+      const reasons = [
+        ...(Array.isArray(health.reasons) ? health.reasons : []),
+        ...(Array.isArray(confidence.reasons) ? confidence.reasons : []),
+      ].filter(
+        (reason, index, all): reason is string =>
+          typeof reason === 'string' &&
+          reason !== 'HEALTHY' &&
+          reason !== 'INDEPENDENT_CONSTRAINTS_UNAVAILABLE' &&
+          all.indexOf(reason) === index
+      );
       return reasons.length
         ? [`${String(sample.name)}: ${reasons.map(label).join(', ')}`]
         : [];
@@ -276,11 +325,14 @@ export function AdaptiveDebugPanel({
     buffer.current = [];
     bytes.current = 0;
     removed.current = 0;
+    lastSnapshotLoggedMs.current = 0;
     previousState.current = '';
     previousRecordingState.current = '';
     setHistory([]);
     setEvents([]);
     sessionRef.current = next;
+    completedSessionRef.current = null;
+    completedRecordingFilesRef.current = [];
     setSession(next);
     setStopping(false);
     append({ type: 'session-start', ...next, settings });
@@ -306,7 +358,9 @@ export function AdaptiveDebugPanel({
       recording.finalizing === true
     )
       return;
+    completedRecordingFilesRef.current = recordingFiles;
     download();
+    completedSessionRef.current = sessionRef.current;
     sessionRef.current = null;
     setSession(null);
     setStopping(false);
@@ -314,6 +368,15 @@ export function AdaptiveDebugPanel({
 
   function mark() {
     const message = note.trim() || 'Visible tracking problem';
+    const snapshotReceivedAt =
+      lastFrame.current === frame ? lastFrameReceivedAt.current : null;
+    if (frame && snapshotReceivedAt) {
+      append({
+        type: 'frame',
+        receivedAt: snapshotReceivedAt,
+        frame,
+      });
+    }
     append({
       type: 'marker',
       receivedAt: new Date().toISOString(),
@@ -333,6 +396,7 @@ export function AdaptiveDebugPanel({
 
   function download() {
     try {
+      const exportedSession = sessionRef.current ?? completedSessionRef.current;
       const header = JSON.stringify({
         type: 'header',
         schemaVersion: 1,
@@ -341,10 +405,13 @@ export function AdaptiveDebugPanel({
         modifiedBuild: !__GIT_CLEAN__,
         exportedAt: new Date().toISOString(),
         omittedEntries: removed.current,
-        session: sessionRef.current,
-        serverRecordingFiles: recordingFiles,
+        session: exportedSession,
+        serverRecordingFiles:
+          sessionRef.current || !completedSessionRef.current
+            ? recordingFiles
+            : completedRecordingFilesRef.current,
         settings,
-        note: 'Sampled UI diagnostics at up to 4 Hz. Send this log together with every server recording part. Neither contains raw IMU packets.',
+        note: 'UI diagnostics sampled every five seconds and at each marker. Send this log together with every server recording part. Neither contains raw IMU packets.',
       });
       const url = URL.createObjectURL(
         new Blob(
@@ -354,7 +421,7 @@ export function AdaptiveDebugPanel({
       );
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `slimevr-test-${sessionRef.current?.scenario ?? 'debug'}-${new Date().toISOString().replaceAll(':', '-')}.jsonl`;
+      anchor.download = `slimevr-test-${exportedSession?.scenario ?? 'debug'}-${new Date().toISOString().replaceAll(':', '-')}.jsonl`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -596,10 +663,22 @@ export function AdaptiveDebugPanel({
                 const age = numeric(sample.packetAgeNanos);
                 const temperature = numeric(sample.temperatureCelsius);
                 const health = object(sample.health);
+                const prediction = object(
+                  object(frame.trackerPredictions)[String(sample.id)]
+                );
+                const residual = object(prediction.residual);
                 const healthReasons = Array.isArray(health.reasons)
                   ? health.reasons.filter(
                       (reason): reason is string =>
                         typeof reason === 'string' && reason !== 'HEALTHY'
+                    )
+                  : [];
+                const confidenceReasons = Array.isArray(confidence.reasons)
+                  ? confidence.reasons.filter(
+                      (reason): reason is string =>
+                        typeof reason === 'string' &&
+                        reason !== 'INDEPENDENT_CONSTRAINTS_UNAVAILABLE' &&
+                        !healthReasons.includes(reason)
                     )
                   : [];
                 return (
@@ -623,6 +702,11 @@ export function AdaptiveDebugPanel({
                         ? 'unavailable'
                         : `${temperature.toFixed(1)} °C`}
                     </p>
+                    <p>
+                      Stationary confidence:{' '}
+                      {numeric(health.stationaryConfidence)?.toFixed(2) ??
+                        'unavailable'}
+                    </p>
                     {health.suspectedFrozen === true && (
                       <p>Suspected frozen orientation</p>
                     )}
@@ -631,6 +715,46 @@ export function AdaptiveDebugPanel({
                     )}
                     {healthReasons.length > 0 && (
                       <p>Health: {healthReasons.map(label).join(', ')}</p>
+                    )}
+                    {confidenceReasons.length > 0 && (
+                      <p>Quality: {confidenceReasons.map(label).join(', ')}</p>
+                    )}
+                    {prediction.expectedRotation !== undefined && (
+                      <details className="mt-1">
+                        <summary>Orientation and pose residual</summary>
+                        <p>Raw sensor heading: {heading(sample.rawRotation)}</p>
+                        <p>
+                          Mounted input heading:{' '}
+                          {heading(sample.adjustedRotation)}
+                        </p>
+                        <p>
+                          Pose input heading:{' '}
+                          {heading(prediction.measuredRotation)}
+                        </p>
+                        <p>
+                          Solver expected heading:{' '}
+                          {heading(prediction.expectedRotation)}
+                        </p>
+                        <p>
+                          Orientation difference:{' '}
+                          {degrees(residual.magnitudeRadians)}
+                        </p>
+                        <p>
+                          Difference axes (x, y, z):{' '}
+                          {['x', 'y', 'z']
+                            .map((axis) =>
+                              degrees(
+                                object(residual.residualVectorRadians)[axis]
+                              )
+                            )
+                            .join(', ')}
+                        </p>
+                        <p>
+                          Raw heading uses sensor axes. Expected heading is
+                          solver inferred and may include this tracker’s own
+                          input.
+                        </p>
+                      </details>
                     )}
                   </div>
                 );
@@ -667,6 +791,26 @@ export function AdaptiveDebugPanel({
                     while fresh evidence is unavailable.
                   </p>
                 )}
+                {numeric(item.predictedRateRadiansPerSecond) !== null && (
+                  <p className="text-sm">
+                    Learned drift rate:{' '}
+                    {(
+                      (Number(item.predictedRateRadiansPerSecond) * 180 * 60) /
+                      Math.PI
+                    ).toFixed(3)}{' '}
+                    °/min
+                  </p>
+                )}
+                <p className="text-sm">
+                  Temperature model: {label(item.temperatureModelStatus)}
+                </p>
+                {numeric(item.historicalConfidenceMultiplier) !== null &&
+                  Number(item.historicalConfidenceMultiplier) < 1 && (
+                    <p className="text-sm">
+                      Learned reliability weight:{' '}
+                      {Number(item.historicalConfidenceMultiplier).toFixed(2)}
+                    </p>
+                  )}
                 <p className="text-sm">
                   Learning:{' '}
                   {object(item.residual).eligibleForLearning === true

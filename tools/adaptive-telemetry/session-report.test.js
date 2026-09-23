@@ -35,6 +35,7 @@ try {
   assert.equal(result.markers[0].snapshotAgeMs, 1000);
   assert.equal(result.markers[1].alignment, "OUTSIDE_RECORDED_WINDOW_OR_EPOCH");
   assert.equal(result.metrics.trackers[0].role, "LEFT_FOOT");
+  assert.deepEqual(result.metrics.poseResiduals, []);
   assert.equal(result.solverTiming.samples, 0);
   assert.equal(integrity([frames[0], frames[20]], 50).gaps.length, 1);
   assert.equal(integrity([frames[1], frames[0]], 50).nonIncreasingTimestamps, 1);

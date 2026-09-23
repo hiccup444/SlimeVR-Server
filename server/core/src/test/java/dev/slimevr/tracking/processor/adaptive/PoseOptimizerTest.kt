@@ -103,6 +103,12 @@ class PoseOptimizerTest {
 		assertFailsWith<IllegalArgumentException> {
 			PoseOptimizer().solve(listOf(PoseSegment(-1, Float.NaN, Vector3.NULL, Quaternion.IDENTITY, 1f)), emptyList())
 		}
+		assertFailsWith<IllegalArgumentException> {
+			PoseOptimizer().solve(listOf(PoseSegment(-1, 0.3f, Vector3.NULL, Quaternion(1e-8f, 0f, 0f, 0f), 1f)), emptyList())
+		}
+		assertFailsWith<IllegalArgumentException> {
+			PoseOptimizer().solve(listOf(PoseSegment(-1, 0.3f, Vector3(Float.MAX_VALUE, 0f, 0f), Quaternion.IDENTITY, 1f)), listOf(PoseAnchor(0, Vector3.NULL, 1f)))
+		}
 	}
 
 	@Test

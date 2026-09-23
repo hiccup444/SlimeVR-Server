@@ -30,7 +30,7 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 	}
 
 	fun update(s: HumanSkeleton, now: Long, observeCalibration: (Tracker, DriftResidual?, Long) -> Double?) {
-		if (!config.yawCorrectionEnabled || config.armCalibrationMode != "disabled" || s.getPauseTracking() || s.stayAlignedConfig.enabled || s.localizer.getEnabled()) {
+		if (!config.yawCorrectionEnabled || !config.yawCorrectionStrength.isFinite() || config.yawCorrectionStrength <= 0f || config.armCalibrationMode != "disabled" || s.getPauseTracking() || s.stayAlignedConfig.enabled || s.localizer.getEnabled()) {
 			reset()
 			return
 		}
@@ -41,6 +41,7 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 		val handOffset = Vector3(0f, pose.getOffset(SkeletonConfigOffsets.HAND_Y), pose.getOffset(SkeletonConfigOffsets.HAND_Z))
 		val head = s.headTracker
 		val chest = s.upperChestTracker ?: s.chestTracker
+		val armWitnessRotations = listOfNotNull(s.leftUpperArmTracker, s.rightUpperArmTracker).associate { it.id to it.getRotation() }
 		val results = mutableListOf<TrackerDriftDiagnostic>()
 		fun arm(tracker: Tracker?, hand: Tracker?, shoulder: Vector3, other: Tracker?, otherHand: Tracker?, otherShoulder: Vector3) {
 			if (tracker == null || !tracker.isImu()) return
@@ -107,7 +108,8 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 			val wrist = hand.position + hand.getRotationWithoutAdaptive().sandwich(handOffset)
 			val otherWrist = otherHand.position + otherHand.getRotationWithoutAdaptive().sandwich(handOffset)
 			val constraint = ArmYawConstraint.estimate(wrist - shoulder, measured.sandwich(Vector3.NEG_Y), upper.toDouble(), lower.toDouble())
-			val otherConstraint = ArmYawConstraint.estimate(otherWrist - otherShoulder, other.getRotation().sandwich(Vector3.NEG_Y), upper.toDouble(), lower.toDouble())
+			val otherRotation = armWitnessRotations[other.id] ?: other.getRotation()
+			val otherConstraint = ArmYawConstraint.estimate(otherWrist - otherShoulder, otherRotation.sandwich(Vector3.NEG_Y), upper.toDouble(), lower.toDouble())
 			if (constraint == null || otherConstraint == null) {
 				reject("ARM_YAW_UNOBSERVABLE_OR_AMBIGUOUS")
 				return

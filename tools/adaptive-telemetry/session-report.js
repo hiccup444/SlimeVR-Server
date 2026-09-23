@@ -78,9 +78,10 @@ function summarizeMarker(record, frames, snapshotAgeMs = null) {
     ...(aligned ? {
       resetEpoch: frame.resetEpoch,
       contactStates: Object.fromEntries(Object.entries(frame.footContacts || {}).map(([side, contact]) => [side, contact?.state ?? null])),
-      driftReasons: (frame.driftDiagnostics || []).map(item => ({ trackerId: item.trackerId, reason: item.residual?.reason ?? null, learningEligible: item.residual?.eligibleForLearning === true, holdoverActive: item.holdoverActive === true })),
+      driftReasons: (frame.driftDiagnostics || []).map(item => ({ trackerId: item.trackerId, reason: item.residual?.reason ?? null, learningEligible: item.residual?.eligibleForLearning === true, holdoverActive: item.holdoverActive === true, temperatureModelStatus: item.temperatureModelStatus ?? null })),
       recoveryTrackerIds: frame.poseDiagnostic?.recoveryTrackerIds ?? [],
       unhealthyTrackers: (frame.samples || []).filter(sample => sample.health?.reasons?.some(reason => reason !== "HEALTHY" && reason !== "WARMING_UP")).map(sample => ({ id: sample.id, name: sample.name, reasons: sample.health.reasons })),
+      lowConfidenceTrackers: (frame.samples || []).filter(sample => finite(sample.confidence?.score) && sample.confidence.score < 0.5).map(sample => ({ id: sample.id, name: sample.name, score: sample.confidence.score, reasons: sample.confidence.reasons ?? [] })),
     } : {}),
   };
 }
@@ -151,7 +152,7 @@ function report(files, notesFile = null) {
       return summarizeMarker(mark, orderedFrames, age);
     }),
     parseErrors: [...parseErrors, ...(notes?.errors ?? []).map(error => `${notesFile}: ${error}`)],
-    metrics: { metricNotes: metrics.metricNotes, frameCount: metrics.frameCount, usableSeconds: metrics.usableSeconds, comparedIntervals: metrics.comparedIntervals, resetCount: metrics.resetCount, droppedFrameTransitions: metrics.droppedFrameTransitions, trackers: metrics.trackers, driftDiagnostics: metrics.driftDiagnostics },
+    metrics: { metricNotes: metrics.metricNotes, frameCount: metrics.frameCount, usableSeconds: metrics.usableSeconds, comparedIntervals: metrics.comparedIntervals, resetCount: metrics.resetCount, droppedFrameTransitions: metrics.droppedFrameTransitions, trackers: metrics.trackers, driftDiagnostics: metrics.driftDiagnostics, poseResiduals: metrics.poseResiduals },
   };
 }
 function compare(baseline, feature) {
@@ -164,9 +165,14 @@ function compare(baseline, feature) {
   };
   const values = item => {
     const drift = item.metrics.driftDiagnostics;
+    const outputs = item.metrics.trackers.filter(tracker => tracker.group === "output");
+    const largestStep = key => {
+      const observed = outputs.map(tracker => tracker[key]).filter(finite);
+      return observed.length ? Math.max(...observed) : null;
+    };
     const change = drift.reduce((sum, tracker) => sum + (tracker.totalAbsoluteBiasChangeRadians || 0), 0);
     const seconds = drift.reduce((sum, tracker) => sum + (tracker.correctionObservedSeconds || 0), 0);
-    return { recordedFrames: item.metrics.frameCount, usableSeconds: item.metrics.usableSeconds, resetCount: item.metrics.resetCount, droppedFrames: item.integrity.droppedFrames, recordingGaps: item.integrity.gaps.length + item.integrity.omittedGaps, plantedFootSlideMetersPerSecond: footSlide(item), yawLearningEligibleTrackerFrames: drift.reduce((sum, tracker) => sum + tracker.eligibleFrames, 0), yawHoldoverTrackerFrames: drift.reduce((sum, tracker) => sum + (tracker.holdoverFrames || 0), 0), totalAbsoluteYawCorrectionRadians: change, meanAbsoluteYawCorrectionRateRadiansPerSecond: seconds ? change / seconds : null, optimizerMedianMs: item.solverTiming?.medianMs ?? null, optimizerP95Ms: item.solverTiming?.p95Ms ?? null };
+    return { recordedFrames: item.metrics.frameCount, usableSeconds: item.metrics.usableSeconds, resetCount: item.metrics.resetCount, droppedFrames: item.integrity.droppedFrames, recordingGaps: item.integrity.gaps.length + item.integrity.omittedGaps, plantedFootSlideMetersPerSecond: footSlide(item), largestOutputPositionStepMeters: largestStep("maxPositionStepMeters"), largestOutputOrientationStepRadians: largestStep("maxOrientationStepRadians"), yawLearningEligibleTrackerFrames: drift.reduce((sum, tracker) => sum + tracker.eligibleFrames, 0), yawHoldoverTrackerFrames: drift.reduce((sum, tracker) => sum + (tracker.holdoverFrames || 0), 0), totalAbsoluteYawCorrectionRadians: change, meanAbsoluteYawCorrectionRateRadiansPerSecond: seconds ? change / seconds : null, optimizerMedianMs: item.solverTiming?.medianMs ?? null, optimizerP95Ms: item.solverTiming?.p95Ms ?? null };
   };
   return { scenario: baseline.session.scenario, baseline: values(baseline), featureOn: values(feature), note: "Descriptive recorded-output comparison only. Match trial motion and inspect markers; these numbers do not establish absolute yaw accuracy or reduced drift." };
 }

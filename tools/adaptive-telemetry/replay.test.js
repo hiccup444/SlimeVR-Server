@@ -30,6 +30,12 @@ assert.ok(Math.abs(measured.usableSeconds - 0.2) < 1e-9);
 assert.equal(measured.trackers[0].plantedIntervals, 2);
 assert.ok(Math.abs(measured.trackers[0].footSlideMeters - 0.04) < 1e-9);
 assert.ok(Math.abs(measured.trackers[0].meanFootSlideMetersPerSecond - 0.2) < 1e-9);
+assert.ok(Math.abs(measured.trackers[0].maxPositionStepMeters - 0.02) < 1e-9);
+assert.equal(measured.trackers[0].maxPositionStepTimestampNanos, 100_000_000);
+const rotated = [frame(0), frame(100_000_000)];
+rotated[0].frame.computedSamples[0].adjustedRotation = { w: 1, x: 0, y: 0, z: 0 };
+rotated[1].frame.computedSamples[0].adjustedRotation = { w: Math.cos(0.1), x: 0, y: Math.sin(0.1), z: 0 };
+assert.ok(Math.abs(evaluate(rec(rotated)).trackers[0].maxOrientationStepRadians - 0.2) < 1e-9);
 
 const dynamic = evaluate(rec([frame(0, { omega: 0, drift: 0.4 }), frame(100_000_000, { omega: 1, vx: 0.2, drift: 0.2 }), frame(200_000_000, { omega: 3, vx: 0.4, drift: 0.1 })]));
 assert.equal(dynamic.trackers[0].meanLinearAcceleration, 2);
@@ -44,6 +50,16 @@ assert.ok(dynamic.driftDiagnostics[0].meanFilteredErrorRadians > 0);
 assert.equal(dynamic.driftDiagnostics[0].meanConsistentSeconds, 1.5);
 assert.deepEqual(dynamic.driftDiagnostics[0].reasons, { stable: 3 });
 assert.match(dynamic.evaluationScope, /not a full solver rerun or raw-packet replay/);
+const diagnosticFrame = frame(0, { drift: 0.1 });
+diagnosticFrame.frame.driftDiagnostics[0].temperatureModelStatus = "PROFILE_IMMATURE_AT_THIS_TEMPERATURE";
+diagnosticFrame.frame.samples.push({ id: 4, name: "arm", role: "LEFT_UPPER_ARM", status: "OK", continuousObservation: true, confidence: { score: 0.4 }, health: { reasons: ["ORIENTATION_DISCONTINUITY"] } });
+diagnosticFrame.frame.trackerPredictions = { 4: { residual: { magnitudeRadians: 0.2, independentlyConstrained: false, reason: "OBSERVING" } } };
+const diagnostics = evaluate(rec([diagnosticFrame]));
+assert.deepEqual(diagnostics.driftDiagnostics[0].temperatureModelStatuses, { PROFILE_IMMATURE_AT_THIS_TEMPERATURE: 1 });
+assert.equal(diagnostics.trackers.find(item => item.id === "input:4").lowConfidenceFrames, 1);
+assert.deepEqual(diagnostics.trackers.find(item => item.id === "input:4").healthReasons, { ORIENTATION_DISCONTINUITY: 1 });
+assert.equal(diagnostics.poseResiduals[0].meanMagnitudeRadians, 0.2);
+assert.equal(diagnostics.poseResiduals[0].independentlyConstrainedFrames, 0);
 
 for (const [scenario, expected] of [["static-standing", 100], ["turn360", 100], ["walking", 160], ["disconnect", 100]]) {
   assert.equal(fixtureFrames(scenario).length, expected);

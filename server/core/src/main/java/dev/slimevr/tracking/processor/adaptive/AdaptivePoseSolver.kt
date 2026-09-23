@@ -150,7 +150,7 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 				priorMeasurement != null &&
 				priorPose != null &&
 				priorMeasurement.angleToR(measured) <= Math.toRadians(45.0)
-			val seed = if (canSeed) (measured * priorMeasurement!!.inv() * priorPose!!).unit() else null
+			val seed = if (canSeed) (measured * priorMeasurement.inv() * priorPose).unit() else null
 			val speed = sample?.angularSpeedRadiansPerSecond
 			val temporal = if (canSeed && !highMotion && (speed == null || speed < 0.5f)) 0.15f else 0f
 			PoseSegment(
@@ -170,6 +170,7 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		val anchors = mutableListOf<PoseAnchor>()
 		fun elbow(upper: Bone, lower: Bone, output: Bone, reversed: Boolean, hand: dev.slimevr.tracking.trackers.Tracker?) {
 			if (hand == null || !hand.hasPosition || !hand.status.sendData) return
+			if (!hand.position.x.isFinite() || !hand.position.y.isFinite() || !hand.position.z.isFinite()) return
 			val age = hand.lastRotationUpdateNanos?.let { now - it }
 			if ((age == null && hand.usesTimeout) || (age != null && age !in 0..250_000_000L)) return
 			if (reversed) {

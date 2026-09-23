@@ -165,6 +165,17 @@ class AbsoluteArmYawIntegrationTest {
 	}
 
 	@Test
+	fun zeroStrengthClearsUpperArmBias() {
+		val f = Fixture()
+		f.stationary(25)
+		assertTrue(f.leftArm.adaptiveYawBiasRadians > 0f)
+		f.pose.adaptiveTrackingConfig.yawCorrectionStrength = 0f
+		f.step()
+		assertEquals(0f, f.leftArm.adaptiveYawBiasRadians)
+		assertEquals("CORRECTION_STRENGTH_ZERO", f.pose.adaptiveEstimator.diagnostics.first { it.trackerId == f.leftArm.id }.residual?.reason)
+	}
+
+	@Test
 	fun anyArmCalibrationModeSuppressesYawLearning() {
 		val f = Fixture()
 		f.pose.adaptiveTrackingConfig.armCalibrationMode = "proportions"
@@ -184,7 +195,7 @@ class AbsoluteArmYawIntegrationTest {
 		val diagnostic = f.pose.adaptiveEstimator.diagnostics.single { it.trackerId == f.leftArm.id }
 		assertEquals(false, diagnostic.poseConfidence?.learningEligible)
 		assertTrue("ABSOLUTE_ANCHOR_QUALITY_LOW" in diagnostic.poseConfidence!!.reasons)
-		assertTrue("TRACKER_CONFIDENCE_LOW" in diagnostic.poseConfidence!!.reasons)
+		assertTrue("TRACKER_CONFIDENCE_LOW" in diagnostic.poseConfidence.reasons)
 	}
 
 	@Test

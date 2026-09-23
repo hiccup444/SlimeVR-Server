@@ -41,6 +41,7 @@ class BodyEvidenceEstimator {
 		return frame.copy(
 			samples = frame.samples.map { sample ->
 				val confidence = sample.confidence ?: return@map sample
+				if (confidence.observationSeconds < 1.0) return@map sample
 				val delta = changes[sample.id] ?: return@map sample
 				val neighbors = chains.filter { sample.id in it }.flatten().distinct().filter { it != sample.id }.mapNotNull { changes[it] }
 				if (neighbors.size < 2) return@map sample
@@ -54,7 +55,7 @@ class BodyEvidenceEstimator {
 				val disagreement = (delta - median).len()
 				if (disagreement < 0.15f) return@map sample
 				val reason = if (disagreement > 0.44f && median.len() < 0.05f) "POSSIBLE_MOUNTING_SHIFT_OR_ARTICULATION" else "TEMPORAL_NEIGHBOR_DISAGREEMENT"
-				val factor = (1f - disagreement * 0.5f).coerceIn(0.4f, 1f)
+				val factor = (1f - disagreement * 0.5f).coerceIn(0.8f, 1f)
 				sample.copy(confidence = confidence.copy(score = confidence.score * factor, reasons = confidence.reasons + reason))
 			},
 		)

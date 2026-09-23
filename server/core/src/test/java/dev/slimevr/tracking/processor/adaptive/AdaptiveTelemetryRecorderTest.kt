@@ -39,6 +39,7 @@ class AdaptiveTelemetryRecorderTest {
 		val json = ObjectMapper().readTree(ObjectMapper().writeValueAsString(frame.toRecord()))
 		assertTrue(json["driftDiagnostics"][0]["holdoverActive"].asBoolean())
 		assertEquals(0.0005, json["driftDiagnostics"][0]["predictedRateRadiansPerSecond"].asDouble(), 1e-9)
+		assertEquals("UNAVAILABLE", json["driftDiagnostics"][0]["temperatureModelStatus"].asText())
 	}
 
 	@Test
@@ -60,8 +61,12 @@ class AdaptiveTelemetryRecorderTest {
 	fun recordedInputRotationMatchesThePoseTickBeforeNewBiasTakesEffect() {
 		val tracker = TestTrackerSet().leftThigh
 		val timestamp = 100_000_000L
+		val sensors = SensorStateManager()
+		tracker.dataTick(1L)
+		sensors.sample(listOf(tracker), emptyList(), 1L)
 		tracker.dataTick(timestamp)
-		val poseInput = SensorStateManager().sample(listOf(tracker), emptyList(), timestamp)
+		val poseInput = sensors.sample(listOf(tracker), emptyList(), timestamp)
+		assertNotNull(poseInput.samples.single().angularSpeedRadiansPerSecond)
 		tracker.adaptiveYawBiasRadians = 0.1f
 		val telemetry = AdaptiveTrackingTelemetry(
 			AdaptiveTrackingConfig().apply {
@@ -72,6 +77,7 @@ class AdaptiveTelemetryRecorderTest {
 		try {
 			telemetry.update(listOf(tracker), emptyList(), timestamp, qualityFrame = poseInput)
 			assertEquals(poseInput.samples.single().adjustedRotation, telemetry.latestFrame!!.samples.single().adjustedRotation)
+			assertEquals(poseInput.samples.single().angularSpeedRadiansPerSecond, telemetry.latestFrame!!.samples.single().angularSpeedRadiansPerSecond)
 			assertTrue(tracker.getRotation() != telemetry.latestFrame!!.samples.single().adjustedRotation)
 		} finally {
 			telemetry.close()

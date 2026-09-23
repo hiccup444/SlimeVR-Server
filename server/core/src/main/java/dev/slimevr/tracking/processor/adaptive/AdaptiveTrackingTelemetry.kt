@@ -49,27 +49,21 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 		val live = qualityFrame?.takeIf { it.timestampNanos == nowNanos }?.samples?.associateBy { it.id }
 		val aligned = if (live != null) {
 			captured.copy(
-				samples = captured.samples.map { sample ->
-					live[sample.id]?.let { input -> sample.copy(rawRotation = input.rawRotation, adjustedRotation = input.adjustedRotation) } ?: sample
-				},
+				samples = captured.samples.map { sample -> live[sample.id] ?: sample },
 			)
 		} else {
 			captured
 		}
 		val frame = if (config.confidenceDiagnosticsEnabled) {
 			if (live != null) {
-				aligned.copy(
-					samples = aligned.samples.map { sample ->
-						live[sample.id]?.let { input -> sample.copy(confidence = input.confidence, health = input.health) } ?: sample
-					},
-				)
+				aligned
 			} else {
 				health.observe(confidence.observe(aligned))
 			}
 		} else {
 			confidence.reset()
 			health.reset()
-			aligned
+			aligned.copy(samples = aligned.samples.map { it.copy(confidence = null, health = null) })
 		}
 		latestFrame = frame
 		recorder?.offer(frame)

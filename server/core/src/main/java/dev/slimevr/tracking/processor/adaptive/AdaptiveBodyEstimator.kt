@@ -22,6 +22,7 @@ data class TrackerDriftDiagnostic(
 	val learning: YawLearningDiagnostic? = null,
 	val historicalConfidenceMultiplier: Float = 1f,
 	val holdoverActive: Boolean = false,
+	val temperatureModelStatus: String = "UNAVAILABLE",
 )
 
 /** Coordinates evidence-gated calibration separately from immediate pose constraints. */
@@ -96,6 +97,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 			}
 			val blocked = when {
 				!config.yawCorrectionEnabled -> "YAW_CORRECTION_DISABLED"
+				!config.yawCorrectionStrength.isFinite() || config.yawCorrectionStrength <= 0f -> "CORRECTION_STRENGTH_ZERO"
 				skeleton.getPauseTracking() -> "TRACKING_PAUSED"
 				skeleton.stayAlignedConfig.enabled -> "BLOCKED_BY_STAY_ALIGNED"
 				skeleton.localizer.getEnabled() -> "BLOCKED_BY_LOCALIZER"
@@ -127,6 +129,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 				canRecoverPreExistingBias = arm,
 				historicalConfidenceMultiplier = if (key != null) reliability?.multiplier(key) ?: 1f else 1f,
 				learning = learningStatistics.getOrPut(tracker.id) { YawLearningStatistics() }.observe(base.residual, now),
+				temperatureModelStatus = temperatureModelStatus(tracker, now, base.predictedRateRadiansPerSecond),
 			)
 		}
 	}
@@ -144,7 +147,7 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 
 	fun update(skeleton: HumanSkeleton, now: Long) {
 		if (!config.temperatureLearningEnabled) calibration?.resetTransient()
-		if (!config.yawCorrectionEnabled || skeleton.getPauseTracking() || skeleton.stayAlignedConfig.enabled || skeleton.localizer.getEnabled()) {
+		if (!config.yawCorrectionEnabled || !config.yawCorrectionStrength.isFinite() || config.yawCorrectionStrength <= 0f || skeleton.getPauseTracking() || skeleton.stayAlignedConfig.enabled || skeleton.localizer.getEnabled()) {
 			reset()
 			return
 		}
@@ -263,6 +266,25 @@ class AdaptiveBodyEstimator(private val config: AdaptiveTrackingConfig) : AutoCl
 		val device = tracker.device ?: return null
 		val hardware = device.hardwareIdentifier.takeIf { it.isNotBlank() && !it.equals("Unknown", true) } ?: return null
 		return "${device.origin}:$hardware:${tracker.trackerNum}".takeIf { it.length <= 512 }
+	}
+
+	private fun temperatureModelStatus(tracker: Tracker, now: Long, predictedRate: Double?): String {
+		if (!config.yawCorrectionEnabled) return "YAW_CORRECTION_DISABLED"
+		if (!config.yawCorrectionStrength.isFinite() || config.yawCorrectionStrength <= 0f) return "CORRECTION_STRENGTH_ZERO"
+		when (tracker.trackerPosition) {
+			TrackerPosition.LEFT_FOOT, TrackerPosition.RIGHT_FOOT, TrackerPosition.LEFT_UPPER_ARM, TrackerPosition.RIGHT_UPPER_ARM -> {}
+			else -> return "NO_INDEPENDENT_YAW_MODEL"
+		}
+		if (!config.temperatureLearningEnabled) return "DISABLED"
+		val key = hardwareKey(tracker) ?: return "NO_STABLE_HARDWARE_ID"
+		val age = tracker.lastTemperatureUpdateNanos?.let { now - it }
+		if (age == null || age !in 0..30_000_000_000L) return "TEMPERATURE_UNAVAILABLE_OR_STALE"
+		val temperature = tracker.temperature?.toDouble()
+		if (temperature == null || !temperature.isFinite() || temperature !in CalibrationProfile.MIN_TEMPERATURE_C..CalibrationProfile.MAX_TEMPERATURE_C) return "TEMPERATURE_OUT_OF_RANGE"
+		val status = calibration?.diagnostics(key) ?: return "PROFILE_NOT_LOADED"
+		if (!status.loaded) return "PROFILE_LOADING"
+		if (status.loadFailed) return "PROFILE_LOAD_FAILED"
+		return if (predictedRate != null) "READY" else "PROFILE_IMMATURE_AT_THIS_TEMPERATURE"
 	}
 
 	private fun available(tracker: Tracker, now: Long): Boolean {

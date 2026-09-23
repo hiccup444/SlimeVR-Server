@@ -104,6 +104,7 @@ class AdaptiveYawIntegrationTest {
 		val diagnostic = f.pose.adaptiveEstimator.diagnostics.first { it.trackerId == f.foot.id }
 		assertEquals("PLANTED_REFERENCE_INCREMENTAL_ONLY", diagnostic.correctionMode)
 		assertEquals(false, diagnostic.canRecoverPreExistingBias)
+		assertEquals("DISABLED", diagnostic.temperatureModelStatus)
 	}
 
 	@Test
@@ -122,6 +123,23 @@ class AdaptiveYawIntegrationTest {
 	}
 
 	@Test
+	fun zeroStrengthClearsAppliedBiasAndRestartsCorrection() {
+		val f = Fixture()
+		for (index in 0..400) f.step(index)
+		assertTrue(f.foot.adaptiveYawBiasRadians > 0f)
+		f.pose.adaptiveTrackingConfig.yawCorrectionStrength = 0f
+		f.step(401)
+		assertEquals(0f, f.foot.adaptiveYawBiasRadians)
+		f.pose.adaptiveEstimator.updateAbsoluteConstraints(f.pose.skeleton, 40_100_000_000L)
+		assertEquals("CORRECTION_STRENGTH_ZERO", f.pose.adaptiveEstimator.diagnostics.first { it.trackerId == f.foot.id }.residual?.reason)
+		f.pose.adaptiveTrackingConfig.yawCorrectionStrength = 0.5f
+		f.step(402)
+		assertEquals(0f, f.foot.adaptiveYawBiasRadians)
+		for (index in 403..800) f.step(index)
+		assertTrue(f.foot.adaptiveYawBiasRadians > 0f)
+	}
+
+	@Test
 	fun matureTemperatureRateCarriesFootCorrectionAcrossContactLoss(@TempDir directory: Path) {
 		val f = Fixture(directory)
 		try {
@@ -132,6 +150,7 @@ class AdaptiveYawIntegrationTest {
 			f.pose.adaptiveEstimator.updateAbsoluteConstraints(f.pose.skeleton, 93_000_000_000L)
 			val diagnostic = f.pose.adaptiveEstimator.diagnostics.first { it.trackerId == f.foot.id }
 			assertTrue(diagnostic.holdoverActive)
+			assertEquals("READY", diagnostic.temperatureModelStatus)
 		} finally {
 			f.pose.adaptiveEstimator.close()
 		}

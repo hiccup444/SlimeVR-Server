@@ -53,6 +53,17 @@ class CalibrationStoreTest {
 	}
 
 	@Test
+	fun unrelatedJsonDoesNotConsumeCalibrationFileLimit(@TempDir directory: Path) {
+		Files.writeString(directory.resolve("notes.json"), "keep")
+		CalibrationStore(directory, maxFiles = 1).use { store ->
+			assertTrue(store.save(trained("first-device")).get())
+			assertFalse(store.save(trained("second-device")).get())
+			assertTrue(store.clearAllKnownProfiles().get())
+			assertTrue(Files.exists(directory.resolve("notes.json")))
+		}
+	}
+
+	@Test
 	fun jacksonTreeCodecDoesNotDependOnKotlinDataClassModule(@TempDir directory: Path) {
 		CalibrationStore(directory).use { store ->
 			val profile = trained("dto-device")

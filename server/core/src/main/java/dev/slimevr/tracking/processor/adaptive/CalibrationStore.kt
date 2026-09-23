@@ -95,7 +95,7 @@ class CalibrationStore(
 		Files.newDirectoryStream(directory).use { entries ->
 			var scanned = 0
 			for (entry in entries) {
-				if (++scanned > maxFiles) return@submit false
+				if (++scanned > maxFiles * 2) return@submit false
 				if (!PROFILE_FILENAME_REGEX.matches(entry.fileName.toString())) continue
 				if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)) profiles.add(entry)
 				if (profiles.size > maxFiles) return@submit false
@@ -107,10 +107,12 @@ class CalibrationStore(
 
 	private fun countProfiles(): Int {
 		if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) return 0
-		Files.newDirectoryStream(directory, "*.json").use { entries ->
+		Files.newDirectoryStream(directory).use { entries ->
 			var count = 0
+			var scanned = 0
 			for (entry in entries) {
-				if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS) && ++count >= maxFiles) return count
+				if (++scanned > maxFiles * 2) return maxFiles
+				if (PROFILE_FILENAME_REGEX.matches(entry.fileName.toString()) && Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS) && ++count >= maxFiles) return count
 			}
 			return count
 		}

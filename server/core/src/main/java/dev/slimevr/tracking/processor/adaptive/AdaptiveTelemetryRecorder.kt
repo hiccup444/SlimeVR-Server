@@ -18,7 +18,8 @@ class AdaptiveTelemetryRecorder(
 	private val maxBytes: Long = 64L * 1024 * 1024,
 	private val maxParts: Int = 32,
 ) : AutoCloseable {
-	private val queue = ArrayBlockingQueue<AdaptiveTelemetryFrame>(128)
+	private data class QueuedFrame(val frame: AdaptiveTelemetryFrame, val droppedAtOffer: Long)
+	private val queue = ArrayBlockingQueue<QueuedFrame>(128)
 	private val dropped = AtomicLong()
 
 	@Volatile private var running = true
@@ -46,7 +47,7 @@ class AdaptiveTelemetryRecorder(
 	}
 
 	fun offer(frame: AdaptiveTelemetryFrame) {
-		if (running && !queue.offer(frame)) dropped.incrementAndGet()
+		if (running && !queue.offer(QueuedFrame(frame, dropped.get()))) dropped.incrementAndGet()
 	}
 
 	private fun writeFrames() {
@@ -67,8 +68,8 @@ class AdaptiveTelemetryRecorder(
 			try {
 				writer.write(header)
 				while (running || queue.isNotEmpty()) {
-					val frame = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
-					val line = mapper.writeValueAsString(mapOf("type" to "frame", "droppedFrames" to dropped.get(), "frame" to frame.toRecord()))
+					val queued = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+					val line = mapper.writeValueAsString(mapOf("type" to "frame", "droppedFrames" to queued.droppedAtOffer, "frame" to queued.frame.toRecord()))
 					val lineBytes = line.toByteArray(Charsets.UTF_8).size + 1L
 					if (bytes + lineBytes > maxBytes) {
 						if (bytes == headerBytes || part >= maxParts) {

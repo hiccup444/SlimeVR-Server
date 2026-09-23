@@ -101,6 +101,7 @@ class PoseOptimizer {
 		}
 		// Report the measured-pose objective, and never accept a worse warm start.
 		val initial = error()
+		require(initial.isFinite())
 		val measuredRotations = rotations.toList()
 		for (i in segments.indices) {
 			val s = segments[i]
@@ -137,6 +138,7 @@ class PoseOptimizer {
 			}
 		}
 		val finalError = error()
+		require(finalError.isFinite() && rotations.all(::valid) && tails.all(::valid))
 		return OptimizedPose(rotations.toList(), tails.toList(), initial, finalError)
 	}
 }
@@ -146,5 +148,5 @@ private fun distance(a: Quaternion, b: Quaternion): Float {
 	val norm = kotlin.math.sqrt(a.lenSq().toDouble() * b.lenSq())
 	return (8.0 * (1.0 - (dot / norm).coerceIn(0.0, 1.0))).toFloat()
 }
-private fun valid(q: Quaternion) = q.w.isFinite() && q.x.isFinite() && q.y.isFinite() && q.z.isFinite() && q.lenSq().isFinite() && q.lenSq() > 0f
+private fun valid(q: Quaternion) = q.w.isFinite() && q.x.isFinite() && q.y.isFinite() && q.z.isFinite() && q.lenSq().isFinite() && q.lenSq() > 1e-12f
 private fun valid(v: Vector3) = v.x.isFinite() && v.y.isFinite() && v.z.isFinite()
