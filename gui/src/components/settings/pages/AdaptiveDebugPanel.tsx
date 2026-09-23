@@ -152,6 +152,7 @@ export function AdaptiveDebugPanel({
   const completedSessionRef = useRef<TestSession | null>(null);
   const completedRecordingFilesRef = useRef<string[]>([]);
   const lastRecordingFilesRef = useRef<string[]>([]);
+  const previousRecordingFilesRef = useRef<Set<string>>(new Set());
   const previousState = useRef('');
   const previousRecordingState = useRef('');
 
@@ -282,6 +283,11 @@ export function AdaptiveDebugPanel({
   const recordingFiles = Array.isArray(recording.files)
     ? recording.files.filter((file): file is string => typeof file === 'string')
     : [];
+  const sessionRecordingFiles = session
+    ? recordingFiles.filter(
+        (file) => !previousRecordingFilesRef.current.has(file)
+      )
+    : recordingFiles;
   const recordingActive = recording.active === true;
   const recordingRequested =
     object(settings).telemetryEnabled === true ||
@@ -292,8 +298,8 @@ export function AdaptiveDebugPanel({
   const droppedFrames = numeric(recording.droppedFrames) ?? 0;
 
   useEffect(() => {
-    if (recordingFiles.length > 0)
-      lastRecordingFilesRef.current = recordingFiles;
+    if (sessionRecordingFiles.length > 0)
+      lastRecordingFilesRef.current = sessionRecordingFiles;
   }, [frame]);
 
   useEffect(() => {
@@ -303,7 +309,7 @@ export function AdaptiveDebugPanel({
       finalizing: recording.finalizing,
       sizeLimitReached: recording.sizeLimitReached,
       failure: recording.failure,
-      files: recordingFiles.length,
+      files: sessionRecordingFiles.length,
     });
     if (state === previousRecordingState.current) return;
     previousRecordingState.current = state;
@@ -316,7 +322,7 @@ export function AdaptiveDebugPanel({
     });
     setEvents((previous) =>
       [
-        `${new Date().toLocaleTimeString()} Recording: ${recordingActive ? 'active' : 'stopped'}, ${recordingFiles.length} file(s)`,
+        `${new Date().toLocaleTimeString()} Recording: ${recordingActive ? 'active' : 'stopped'}, ${sessionRecordingFiles.length} file(s)`,
         ...previous,
       ].slice(0, 30)
     );
@@ -343,6 +349,7 @@ export function AdaptiveDebugPanel({
     completedSessionRef.current = null;
     completedRecordingFilesRef.current = [];
     lastRecordingFilesRef.current = [];
+    previousRecordingFilesRef.current = new Set(recordingFiles);
     setSession(next);
     setStopping(false);
     append({ type: 'session-start', ...next, settings });
@@ -372,8 +379,8 @@ export function AdaptiveDebugPanel({
       return;
     completedSessionRef.current = sessionRef.current;
     completedRecordingFilesRef.current =
-      recordingFiles.length > 0
-        ? recordingFiles
+      sessionRecordingFiles.length > 0
+        ? sessionRecordingFiles
         : lastRecordingFilesRef.current;
     sessionRef.current = null;
     download();
@@ -423,8 +430,8 @@ export function AdaptiveDebugPanel({
         session: exportedSession,
         serverRecordingFiles:
           sessionRef.current || !completedSessionRef.current
-            ? recordingFiles.length > 0
-              ? recordingFiles
+            ? sessionRecordingFiles.length > 0
+              ? sessionRecordingFiles
               : lastRecordingFilesRef.current
             : completedRecordingFilesRef.current,
         settings,
@@ -596,7 +603,7 @@ export function AdaptiveDebugPanel({
           ? `${session.condition} · ${scenario.name} · trial ${session.trial} · ${Math.floor((clock - session.startedAtMs) / 1000)} seconds · `
           : ''}
         {recordingActive
-          ? `Server recording: ${writtenFrames} frames in ${recordingFiles.length} file(s), ${droppedFrames} dropped`
+          ? `Server recording: ${writtenFrames} frames in ${sessionRecordingFiles.length} file(s), ${droppedFrames} dropped`
           : recordingRequested
             ? 'Server recording is starting or finalizing'
             : 'Server recording is off'}
@@ -610,11 +617,11 @@ export function AdaptiveDebugPanel({
       {typeof recording.failure === 'string' && (
         <p role="alert">Server recording failed: {recording.failure}</p>
       )}
-      {recordingFiles.length > 0 && (
+      {sessionRecordingFiles.length > 0 && (
         <div className="text-sm">
           <p>Server files to keep:</p>
           <ul className="list-disc pl-5">
-            {recordingFiles.map((file) => (
+            {sessionRecordingFiles.map((file) => (
               <li key={file}>{file}</li>
             ))}
           </ul>
@@ -622,7 +629,9 @@ export function AdaptiveDebugPanel({
             <Button
               variant="secondary"
               onClick={() =>
-                window.electronAPI.openAdaptiveRecording(recordingFiles[0])
+                window.electronAPI.openAdaptiveRecording(
+                  sessionRecordingFiles[0]
+                )
               }
             >
               Show recording in folder
