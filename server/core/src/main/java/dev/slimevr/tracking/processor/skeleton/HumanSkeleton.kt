@@ -208,7 +208,7 @@ class HumanSkeleton(
 	private var kneeAnkleAveraging = 0f
 
 	// Others
-	private var pauseTracking = false // Pauses skeleton tracking if true, resumes skeleton tracking if false
+	@Volatile private var pauseTracking = false // Pauses skeleton tracking if true, resumes skeleton tracking if false
 
 	// Modules
 	var legTweaks = LegTweaks(this)

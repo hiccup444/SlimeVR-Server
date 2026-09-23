@@ -267,9 +267,13 @@ export function AdaptiveDebugPanel({
     const recovering = Array.isArray(recovery)
       ? recovery.map((id) => `Tracker ${String(id)}: pose recovery active`)
       : [];
-    const state = [...contacts, ...drift, ...problems, ...recovering].join(
-      ' | '
-    );
+    const state = [
+      ...(frame.trackingPaused === true ? ['Tracking paused'] : []),
+      ...contacts,
+      ...drift,
+      ...problems,
+      ...recovering,
+    ].join(' | ');
     if (state && state !== previousState.current) {
       previousState.current = state;
       append({
@@ -410,8 +414,10 @@ export function AdaptiveDebugPanel({
     append({
       type: 'marker',
       receivedAt: new Date().toISOString(),
-      timestampNanos: frame?.timestampNanos ?? null,
-      resetEpoch: frame?.resetEpoch ?? null,
+      timestampNanos:
+        frame?.trackingPaused === true ? null : (frame?.timestampNanos ?? null),
+      resetEpoch:
+        frame?.trackingPaused === true ? null : (frame?.resetEpoch ?? null),
       sessionId: sessionRef.current?.id ?? null,
       message,
     });
@@ -465,6 +471,7 @@ export function AdaptiveDebugPanel({
   }
 
   const stale = !lastReceived || clock - lastReceived > 3000;
+  const trackingPaused = frame?.trackingPaused === true;
   const samples =
     frame && Array.isArray(frame.samples) ? frame.samples.map(object) : [];
   const drift =
@@ -492,7 +499,9 @@ export function AdaptiveDebugPanel({
             ? 'Debug view is off'
             : stale
               ? 'Waiting for fresh tracking data'
-              : `Live · ${samples.length} trackers · updating up to 4 times per second`}
+              : trackingPaused
+                ? 'Tracking paused · recording status remains available'
+                : `Live · ${samples.length} trackers · updating up to 4 times per second`}
       </p>
       <div className="grid gap-2 sm:grid-cols-3">
         <label className="flex flex-col gap-1 text-sm">

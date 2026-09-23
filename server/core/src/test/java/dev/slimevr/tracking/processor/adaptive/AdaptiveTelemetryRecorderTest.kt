@@ -102,6 +102,86 @@ class AdaptiveTelemetryRecorderTest {
 	}
 
 	@Test
+	fun recordingTransitionsAreProcessedBeforeTheNextSampleIsDue() {
+		val config = AdaptiveTrackingConfig().apply {
+			liveDiagnosticsEnabled = true
+			telemetryEnabled = true
+			telemetrySampleRateHz = 1
+			telemetryDirectory = directory.toString()
+		}
+		val telemetry = AdaptiveTrackingTelemetry(config)
+		try {
+			telemetry.update(emptyList(), emptyList(), 1L)
+			fun recordingFiles(): List<String> = (telemetry.recordingStatus()["files"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+			fun awaitFile(): String {
+				repeat(200) {
+					recordingFiles().firstOrNull()?.let { file -> return file }
+					Thread.sleep(5)
+				}
+				return assertNotNull(recordingFiles().firstOrNull())
+			}
+			val firstFile = awaitFile()
+			config.telemetryEnabled = false
+			assertEquals(true, telemetry.recordingStatus()["finalizing"])
+			telemetry.update(emptyList(), emptyList(), 2L)
+			for (attempt in 0 until 200) {
+				if (telemetry.recordingStatus()["finalizing"] != true) break
+				Thread.sleep(5)
+			}
+			assertEquals(2, Files.readAllLines(Path.of(firstFile)).size)
+			config.telemetryEnabled = true
+			telemetry.update(emptyList(), emptyList(), 3L)
+			assertTrue(telemetry.recordingStatus()["active"] == true)
+			val secondFile = awaitFile()
+			assertTrue(secondFile != firstFile)
+			config.telemetryEnabled = false
+			telemetry.update(emptyList(), emptyList(), 4L)
+			for (attempt in 0 until 200) {
+				if (telemetry.recordingStatus()["finalizing"] != true) break
+				Thread.sleep(5)
+			}
+			assertEquals(2, Files.readAllLines(Path.of(secondFile)).size)
+		} finally {
+			telemetry.close()
+			for (attempt in 0 until 200) {
+				if (telemetry.recordingStatus()["finalizing"] != true) break
+				Thread.sleep(5)
+			}
+		}
+	}
+
+	@Test
+	fun pausedTrackingCanFinalizeARecordingWithoutSamplingAnotherFrame() {
+		val config = AdaptiveTrackingConfig().apply {
+			liveDiagnosticsEnabled = true
+			telemetryEnabled = true
+			telemetryDirectory = directory.toString()
+		}
+		val telemetry = AdaptiveTrackingTelemetry(config)
+		telemetry.update(emptyList(), emptyList(), 1L)
+		config.telemetryEnabled = false
+		telemetry.reset()
+		for (attempt in 0 until 200) {
+			if (telemetry.recordingStatus()["finalizing"] != true) break
+			Thread.sleep(5)
+		}
+		val files = (telemetry.recordingStatus()["files"] as List<*>).filterIsInstance<String>()
+		assertEquals(1, files.size)
+		assertEquals(2, Files.readAllLines(Path.of(files.single())).size)
+	}
+
+	@Test
+	fun pausedTrackingStillExposesRecordingStatusToTheDebugScreen() {
+		val pose = HumanPoseManager(TestTrackerSet().allL)
+		pose.adaptiveTrackingConfig.liveDiagnosticsEnabled = true
+		pose.setPauseTracking(true, "telemetry-test")
+		val paused = ObjectMapper().readTree(assertNotNull(pose.adaptiveDiagnosticsJson()))
+		assertTrue(paused["trackingPaused"].asBoolean())
+		assertTrue(paused["samples"].isEmpty)
+		assertFalse(paused["recording"]["requested"].asBoolean())
+	}
+
+	@Test
 	fun contactRecordingIncludesAnchorCoordinatesAndRequestedMode() {
 		val frame = AdaptiveTelemetryFrame(
 			1L,

@@ -143,6 +143,19 @@ class StationaryChainYawIntegrationTest {
 	}
 
 	@Test
+	fun disconnectedFootBlocksLearningBeforeThePreviousContactSnapshotReleases() {
+		val fixture = Fixture()
+		for (index in 0..600) fixture.step(index, TrackerPosition.HIP, index * 0.001)
+		val hip = fixture.tracker(TrackerPosition.HIP)
+		val bias = hip.adaptiveYawBiasRadians
+		assertTrue(bias > 0f)
+		fixture.tracker(TrackerPosition.LEFT_FOOT).status = TrackerStatus.DISCONNECTED
+		fixture.step(601, TrackerPosition.HIP, 0.601)
+		assertEquals(bias, hip.adaptiveYawBiasRadians)
+		assertEquals("WAITING_FOR_BOTH_PLANTED_FEET", fixture.pose.adaptiveEstimator.diagnostics.first { it.trackerId == hip.id }.residual?.reason)
+	}
+
+	@Test
 	fun disablingCorrectionAndYawResetClearTheTransientBias() {
 		val fixture = Fixture()
 		for (index in 0..600) fixture.step(index, TrackerPosition.LEFT_LOWER_LEG, index * 0.001)

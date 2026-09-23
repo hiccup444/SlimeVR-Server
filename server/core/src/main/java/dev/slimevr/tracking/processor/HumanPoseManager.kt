@@ -43,8 +43,21 @@ class HumanPoseManager(val server: VRServer?) {
 	val adaptivePoseSolver = AdaptivePoseSolver(adaptiveTrackingConfig)
 	val adaptiveArmCalibration = OpportunisticArmCalibration(this, adaptiveTrackingConfig)
 	private val adaptiveJsonMapper = ObjectMapper()
-	fun adaptiveDiagnosticsJson(): String? = adaptiveTelemetry.latestFrame?.let {
-		adaptiveJsonMapper.writeValueAsString(it.toRecord() + ("recording" to adaptiveTelemetry.recordingStatus()))
+	fun adaptiveDiagnosticsJson(): String? {
+		if (adaptiveTrackingConfig.liveDiagnosticsEnabled && isSkeletonPresent && getPauseTracking()) {
+			return adaptiveJsonMapper.writeValueAsString(
+				mapOf(
+					"timestampNanos" to System.nanoTime(),
+					"resetEpoch" to 0L,
+					"samples" to emptyList<Any>(),
+					"trackingPaused" to true,
+					"recording" to adaptiveTelemetry.recordingStatus(),
+				),
+			)
+		}
+		val frame = adaptiveTelemetry.latestFrame
+		if (frame != null) return adaptiveJsonMapper.writeValueAsString(frame.toRecord() + ("recording" to adaptiveTelemetry.recordingStatus()))
+		return null
 	}
 	val computedTrackers: MutableList<Tracker> = FastList()
 	private val onSkeletonUpdated: MutableList<Consumer<HumanSkeleton>> = FastList()

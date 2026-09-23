@@ -66,9 +66,10 @@ class StationaryChainYawEstimator(private val config: AdaptiveTrackingConfig) {
 		val leftContact = s.legTweaks.adaptiveLeftFoot.snapshot
 		val rightContact = s.legTweaks.adaptiveRightFoot.snapshot
 		val contact = minOf(leftContact.weight, rightContact.weight)
-		val feetPlanted = leftContact.state == FootContactState.PLANTED && rightContact.state == FootContactState.PLANTED && contact >= 0.85f
 		val qualityFrame = s.humanPoseManager.adaptiveMeasurementQuality.observe(s, now)
 		val qualityById = qualityFrame.samples.associateBy { it.id }
+		fun currentFootTrusted(foot: Tracker?): Boolean = foot != null && available(foot, now) && (qualityById[foot.id]?.confidence?.score ?: 0f) >= 0.85f
+		val feetPlanted = leftContact.state == FootContactState.PLANTED && rightContact.state == FootContactState.PLANTED && contact >= 0.85f && currentFootTrusted(s.leftFootTracker) && currentFootTrusted(s.rightFootTracker)
 		val chest = s.upperChestTracker ?: s.chestTracker
 		val waist = s.waistTracker
 		val hip = s.hipTracker

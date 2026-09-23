@@ -22,17 +22,17 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 			close()
 			return
 		}
+		if (config.telemetryEnabled && recorder == null) {
+			recorder = AdaptiveTelemetryRecorder(config.telemetryDirectory).also { recentRecorder = it }
+			previousSampleNanos = null
+		} else if (!config.telemetryEnabled) {
+			recorder?.close()
+			recorder = null
+		}
 		val interval = 1_000_000_000L / config.telemetrySampleRateHz.coerceIn(1, 100)
 		val previous = previousSampleNanos
 		if (previous != null && nowNanos >= previous && nowNanos - previous < interval) return
 		previousSampleNanos = nowNanos
-		if (config.telemetryEnabled && recorder == null) {
-			recorder = AdaptiveTelemetryRecorder(config.telemetryDirectory).also { recentRecorder = it }
-		}
-		if (!config.telemetryEnabled) {
-			recorder?.close()
-			recorder = null
-		}
 		val captured = sensors.sample(trackers.filter { !it.isInternal }, outputs, nowNanos).copy(
 			footContacts = footContacts,
 			footAnchoringRequested = config.footAnchoringEnabled,
@@ -74,7 +74,7 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 		return mapOf(
 			"requested" to config.telemetryEnabled,
 			"active" to (config.telemetryEnabled && recorder === writer && writer?.isRecording == true),
-			"finalizing" to (writer?.isFinalizing == true),
+			"finalizing" to (writer?.isFinalizing == true || (!config.telemetryEnabled && writer?.isRecording == true)),
 			"directory" to config.telemetryDirectory,
 			"sampleRateHz" to config.telemetrySampleRateHz.coerceIn(1, 100),
 			"files" to (writer?.outputPaths?.map { it.toAbsolutePath().toString() } ?: emptyList()),
@@ -86,6 +86,10 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 	}
 
 	fun reset() {
+		if (!config.telemetryEnabled) {
+			recorder?.close()
+			recorder = null
+		}
 		sensors.reset()
 		confidence.reset()
 		health.reset()
