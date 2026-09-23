@@ -22,12 +22,26 @@ class CalibrationProfileTest {
 	}
 
 	@Test
+	fun wideUntrainedTemperatureGapDoesNotProduceAProjectedRate() {
+		val profile = CalibrationProfile("sensor-wide-gap")
+		train(profile, 20.0, 0.0002)
+		train(profile, 40.0, 0.0012)
+		assertEquals(0.0002, profile.predictRate(22.0)!!, 1e-9)
+		assertEquals(0.0012, profile.predictRate(38.0)!!, 1e-9)
+		assertNull(profile.predictRate(30.0))
+	}
+
+	@Test
 	fun requiresTrustedAccumulatedEvidence() {
 		val profile = CalibrationProfile("sensor-a")
 		assertTrue(profile.update(20.0, 0.0004, 59.9, 0.95))
 		assertNull(profile.predictRate(20.0))
 		assertTrue(profile.update(20.0, 0.0004, 0.1, 0.95))
 		assertEquals(0.0004, profile.predictRate(20.0)!!, 1e-9)
+		assertEquals(0.0004, profile.predictRate(22.4)!!, 1e-9)
+		assertEquals(0.0004, profile.predictRate(17.6)!!, 1e-9)
+		assertNull(profile.predictRate(22.6))
+		assertNull(profile.predictRate(17.4))
 	}
 
 	@Test

@@ -487,6 +487,25 @@ export function AdaptiveTrackingSettings() {
     useState<AdaptiveTrackingSettingsT | null>(null);
   const liveDiagnosticsEnabled =
     confirmedSettings?.liveDiagnosticsEnabled === AdaptiveBoolean.TRUE;
+  const confirmedArmMode =
+    typeof confirmedSettings?.armCalibrationMode === 'string'
+      ? confirmedSettings.armCalibrationMode
+      : confirmedSettings?.armCalibrationMode instanceof Uint8Array
+        ? new TextDecoder().decode(confirmedSettings.armCalibrationMode)
+        : 'disabled';
+  const activeFeatures = [
+    confirmedSettings?.yawCorrectionEnabled === AdaptiveBoolean.TRUE &&
+      'Yaw correction',
+    confirmedSettings?.footAnchoringEnabled === AdaptiveBoolean.TRUE &&
+      'Foot anchoring',
+    confirmedSettings?.poseOptimizerEnabled === AdaptiveBoolean.TRUE &&
+      'Pose optimizer',
+    confirmedSettings?.floorEstimationEnabled === AdaptiveBoolean.TRUE &&
+      'Floor estimation',
+    confirmedSettings?.temperatureLearningEnabled === AdaptiveBoolean.TRUE &&
+      'Temperature learning',
+    confirmedArmMode !== 'disabled' && 'Arm calibration',
+  ].filter((name): name is string => typeof name === 'string');
   const [saveState, setSaveState] = useState<
     'idle' | 'saving' | 'saved' | 'error'
   >('idle');
@@ -702,6 +721,26 @@ export function AdaptiveTrackingSettings() {
     sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
   };
 
+  const setTestRecording = (record: boolean) => {
+    if (!isConnected) {
+      setSaveState('error');
+      return;
+    }
+    const adaptive = new AdaptiveTrackingSettingsPatchT();
+    adaptive.telemetryEnabled = record
+      ? AdaptiveBoolean.TRUE
+      : AdaptiveBoolean.FALSE;
+    if (record) {
+      adaptive.liveDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+      adaptive.confidenceDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+      adaptive.footContactDiagnosticsEnabled = AdaptiveBoolean.TRUE;
+    }
+    const request = new ChangeSettingsRequestT();
+    request.adaptiveTracking = adaptive;
+    setSaveState('saving');
+    sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
+  };
+
   return (
     <SettingsPagePaneLayout icon={<BugIcon />} id="adaptive-tracking">
       <div className="flex flex-col gap-4">
@@ -710,6 +749,7 @@ export function AdaptiveTrackingSettings() {
           connected={isConnected}
           enabled={liveDiagnosticsEnabled}
           settings={confirmedSettings}
+          activeFeatures={activeFeatures}
           onEnable={() => {
             const adaptive = new AdaptiveTrackingSettingsPatchT();
             adaptive.liveDiagnosticsEnabled = AdaptiveBoolean.TRUE;
@@ -720,6 +760,8 @@ export function AdaptiveTrackingSettings() {
             setSaveState('saving');
             sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
           }}
+          onStartRecording={() => setTestRecording(true)}
+          onStopRecording={() => setTestRecording(false)}
         />
         <div>
           <Typography variant="main-title">

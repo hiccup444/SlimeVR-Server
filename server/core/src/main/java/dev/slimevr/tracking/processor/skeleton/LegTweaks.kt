@@ -6,6 +6,8 @@ import dev.slimevr.tracking.processor.Bone
 import dev.slimevr.tracking.processor.adaptive.AdaptiveFloorEstimate
 import dev.slimevr.tracking.processor.adaptive.AdaptiveFloorEstimator
 import dev.slimevr.tracking.processor.adaptive.FootContactDetector
+import dev.slimevr.tracking.processor.adaptive.FootCorrectionPolicy
+import dev.slimevr.tracking.processor.adaptive.MeasurementQualityGate
 import dev.slimevr.tracking.processor.config.SkeletonConfigToggles
 import dev.slimevr.tracking.trackers.Tracker
 import io.github.axisangles.ktmath.EulerAngles
@@ -223,11 +225,24 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 		if (floorClipEnabled && !localizerMode) correctClipping()
 
 		// correct for skating if needed (Skating correction)
-		if (adaptiveAnchoringEligible) {
-			leftFootPosition = adaptiveLeftFoot.correct(leftFootPosition, adaptiveConfig.footAnchorStrength)
-			rightFootPosition = adaptiveRightFoot.correct(rightFootPosition, adaptiveConfig.footAnchorStrength)
-		} else if (skatingCorrectionEnabled) {
+		if (skatingCorrectionEnabled) {
+			// Compute the baseline once, then select independently for each foot.
+			// Missing/stale contacts and zero strength must retain legacy correction.
+			val leftRaw = leftFootPosition
+			val rightRaw = rightFootPosition
 			correctSkating()
+			val solver = skeleton.humanPoseManager.adaptivePoseSolver
+			val solverOwns = if (solver.lastSolvedTimestampNanos == nowNanos) solver.footAnchorsApplied else emptySet()
+			leftFootPosition = if ("LEFT_FOOT_TRACKER" in solverOwns) {
+				leftRaw
+			} else {
+				FootCorrectionPolicy.select(leftRaw, leftFootPosition, adaptiveLeftFoot, adaptiveAnchoringEligible, adaptiveConfig.footAnchorStrength)
+			}
+			rightFootPosition = if ("RIGHT_FOOT_TRACKER" in solverOwns) {
+				rightRaw
+			} else {
+				FootCorrectionPolicy.select(rightRaw, rightFootPosition, adaptiveRightFoot, adaptiveAnchoringEligible, adaptiveConfig.footAnchorStrength)
+			}
 		}
 
 		// calculate the correction for the knees
@@ -410,8 +425,13 @@ class LegTweaks(private val skeleton: HumanSkeleton) {
 			resetAdaptiveContacts()
 			return
 		}
+		val quality = skeleton.humanPoseManager.adaptiveMeasurementQuality.latestFrame
+			?.takeIf { it.timestampNanos == now }
+			?.samples
+			?.associateBy { it.id }
 		fun available(tracker: Tracker?): Boolean {
 			if (tracker == null || !tracker.status.sendData || !tracker.hasRotation) return false
+			if (quality != null && !MeasurementQualityGate.trusted(quality[tracker.id])) return false
 			val age = tracker.lastRotationUpdateNanos?.let { now - it }
 			if (age == null && tracker.usesTimeout) return false
 			if (age != null && age !in 0..250_000_000L) return false

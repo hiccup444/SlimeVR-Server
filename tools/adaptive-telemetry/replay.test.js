@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const { parseRecording, evaluate, fixtureFrames, writeFixtures } = require("./replay.js");
 
 function rec(frames) { return { header: { schemaVersion: 1 }, frames }; }
@@ -10,7 +11,7 @@ function frame(t, options = {}) {
   const sample = { id: 1, name: "foot", role: "LEFT_FOOT", status: "OK", continuousObservation: true,
     position: { x: options.x ?? 0, y: 0, z: 0 }, derivedLinearVelocity: options.vx === undefined ? { x: 0, y: 0, z: 0 } : { x: options.vx, y: 0, z: 0 },
     angularSpeedRadiansPerSecond: options.omega ?? 0 };
-  return { type: "frame", droppedFrames: options.dropped ?? 0, frame: { timestampNanos: t, resetEpoch: options.epoch ?? 0, samples: [], computedSamples: options.invalid ? [{ ...sample, continuousObservation: false }] : [sample], driftDiagnostics: options.drift ? [{ trackerId: 4, biasRadians: 0.1, residual: { errorRadians: options.drift, filteredErrorRadians: options.drift / 2, consistentSeconds: 1.5, eligibleForLearning: true, reason: "stable" } }] : [], footContacts: { left: { state: options.planted === false ? "AIRBORNE" : "PLANTED", plantPosition: { x: 0, y: 0, z: 0 } } } } };
+  return { type: "frame", droppedFrames: options.dropped ?? 0, frame: { timestampNanos: t, resetEpoch: options.epoch ?? 0, samples: [], computedSamples: options.invalid ? [{ ...sample, continuousObservation: false }] : [sample], driftDiagnostics: options.drift ? [{ trackerId: 4, biasRadians: options.bias ?? 0.1, residual: { errorRadians: options.drift, filteredErrorRadians: options.drift / 2, consistentSeconds: 1.5, eligibleForLearning: true, reason: "stable" } }] : [], footContacts: { left: { state: options.planted === false ? "AIRBORNE" : "PLANTED", plantPosition: { x: 0, y: 0, z: 0 } } } } };
 }
 
 const malformed = parseRecording('{"type":"header","schemaVersion":1}\nnope\n{"type":"other"}\n{"type":"frame","frame":{"timestampNanos":1,"samples":[],"computedSamples":[]}}\n');
@@ -34,6 +35,11 @@ const dynamic = evaluate(rec([frame(0, { omega: 0, drift: 0.4 }), frame(100_000_
 assert.equal(dynamic.trackers[0].meanLinearAcceleration, 2);
 assert.ok(dynamic.trackers[0].meanAngularSpeedSecondDerivativeRadiansPerSecondCubed > 0);
 assert.equal(dynamic.driftDiagnostics[0].diagnosticFrames, 3);
+assert.equal(dynamic.driftDiagnostics[0].holdoverFrames, 0);
+assert.equal(dynamic.driftDiagnostics[0].totalAbsoluteBiasChangeRadians, 0);
+const biasMovement = evaluate(rec([frame(0, { drift: 0.1, bias: 0 }), frame(100_000_000, { drift: 0.1, bias: 0.001 }), frame(200_000_000, { drift: 0.1, bias: 0.002 }), frame(300_000_000, { drift: 0.1, bias: 0, epoch: 1 })]));
+assert.ok(Math.abs(biasMovement.driftDiagnostics[0].totalAbsoluteBiasChangeRadians - 0.002) < 1e-9);
+assert.ok(Math.abs(biasMovement.driftDiagnostics[0].maxCorrectionRateRadiansPerSecond - 0.01) < 1e-9);
 assert.ok(dynamic.driftDiagnostics[0].meanFilteredErrorRadians > 0);
 assert.equal(dynamic.driftDiagnostics[0].meanConsistentSeconds, 1.5);
 assert.deepEqual(dynamic.driftDiagnostics[0].reasons, { stable: 3 });
@@ -54,5 +60,8 @@ const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "adaptive-telemetry-"))
 writeFixtures(fixtureDir);
 assert.equal(fs.readdirSync(fixtureDir).length, 4);
 for (const file of fs.readdirSync(fixtureDir)) assert.ok(parseRecording(fs.readFileSync(path.join(fixtureDir, file), "utf8")).frames.length > 0);
+const combined = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "replay.js"), path.join(fixtureDir, "static-standing.jsonl"), path.join(fixtureDir, "walking.jsonl")], { encoding: "utf8" }));
+assert.equal(combined.sourceFiles.length, 2);
+assert.ok(combined.trackers.length > 0);
 fs.rmSync(fixtureDir, { recursive: true, force: true });
 console.log("recorded telemetry replay tests passed");

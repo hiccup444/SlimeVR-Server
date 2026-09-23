@@ -12,6 +12,8 @@ class OrientationRecovery {
 	private var lastUpdate: Long? = null
 	private var output: Quaternion? = null
 	private var recovering = false
+	var usingPrediction = false
+		private set
 
 	fun reset() {
 		lastGood = null
@@ -21,6 +23,7 @@ class OrientationRecovery {
 		lastUpdate = null
 		output = null
 		recovering = false
+		usingPrediction = false
 	}
 
 	fun update(measured: Quaternion, available: Boolean, now: Long): Quaternion {
@@ -29,6 +32,7 @@ class OrientationRecovery {
 		lastUpdate = now
 		val valid = measured.w.isFinite() && measured.x.isFinite() && measured.y.isFinite() && measured.z.isFinite() && measured.lenSq().isFinite() && measured.lenSq() > 0f
 		if (available && valid) {
+			usingPrediction = false
 			val normalized = measured.unit()
 			priorGood = lastGood
 			priorGoodTime = lastGoodTime
@@ -40,7 +44,9 @@ class OrientationRecovery {
 			return output!!
 		}
 		recovering = true
-		val good = lastGood ?: return if (valid) measured.unit() else Quaternion.IDENTITY
+		val good = lastGood
+		usingPrediction = good != null
+		if (good == null) return if (valid) measured.unit() else Quaternion.IDENTITY
 		val age = (now - (lastGoodTime ?: now)).coerceAtLeast(0)
 		val interval = priorGoodTime?.let { (lastGoodTime ?: now) - it }
 		val prior = priorGood

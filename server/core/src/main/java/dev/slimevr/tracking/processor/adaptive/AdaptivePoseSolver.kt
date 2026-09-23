@@ -3,22 +3,29 @@ package dev.slimevr.tracking.processor.adaptive
 import dev.slimevr.config.AdaptiveTrackingConfig
 import dev.slimevr.tracking.processor.Bone
 import dev.slimevr.tracking.processor.skeleton.HumanSkeleton
+import dev.slimevr.tracking.trackers.Tracker
 import io.github.axisangles.ktmath.Quaternion
 import io.github.axisangles.ktmath.Vector3
 
-data class PoseSolverDiagnostic(val initialError: Float, val finalError: Float, val processingNanos: Long, val measurementConfidence: Float)
+data class PoseSolverDiagnostic(val initialError: Float, val finalError: Float, val processingNanos: Long, val measurementConfidence: Float, val recoveryTrackerIds: List<Int> = emptyList())
 
 data class TrackerPosePrediction(val expectedRotation: Quaternion, val measuredRotation: Quaternion, val residual: PoseResidualDiagnostic)
 
 /** Adapts the existing multi-root skeleton to a single weighted pose objective. */
 class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 	private val optimizer = PoseOptimizer()
-	private val sensors = SensorStateManager()
-	private val confidence = TrackerConfidenceEstimator()
-	private val health = TrackerHealthEstimator()
-	private val bodyEvidence = BodyEvidenceEstimator()
 	private val recovery = mutableMapOf<Bone, OrientationRecovery>()
 	private val previous = mutableMapOf<Bone, Quaternion>()
+	private val previousMeasurements = mutableMapOf<Bone, Quaternion>()
+	private val previousRootPositions = mutableMapOf<Bone, Vector3>()
+	private data class Layout(val bone: Bone, val parent: Bone?, val length: Float, val offset: Quaternion, val tracker: Tracker?)
+	private var previousLayout: List<Layout> = emptyList()
+
+	/** A foot has only one horizontal contact-correction owner in a frame. */
+	var footAnchorsApplied: Set<String> = emptySet()
+		private set
+	var lastSolvedTimestampNanos: Long? = null
+		private set
 	private val residualMonitor = PoseResidualMonitor()
 	private val activityMonitor = AdaptiveActivityMonitor()
 	var activity: AdaptiveActivityEstimate? = null
@@ -39,15 +46,16 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 
 	fun reset() {
 		previous.clear()
+		previousMeasurements.clear()
+		previousRootPositions.clear()
+		previousLayout = emptyList()
+		footAnchorsApplied = emptySet()
+		lastSolvedTimestampNanos = null
 		residualMonitor.reset()
 		activityMonitor.reset()
 		activity = null
 		trackerPredictions = emptyMap()
 		lastTime = null
-		sensors.reset()
-		confidence.reset()
-		health.reset()
-		bodyEvidence.reset()
 		recovery.clear()
 		diagnostic = null
 		replayInput = null
@@ -57,6 +65,8 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 	}
 
 	fun update(s: HumanSkeleton, now: Long) {
+		footAnchorsApplied = emptySet()
+		lastSolvedTimestampNanos = null
 		if (!config.poseOptimizerEnabled || s.getPauseTracking() || s.localizer.getEnabled()) {
 			if (lastTime != null) reset()
 			predictedPose = emptyMap()
@@ -94,17 +104,24 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		}
 		selected.filter { it.parent == null }.forEach { visit(it) }
 		val indices = bones.withIndex().associate { it.value to it.index }
-		val trackers = bones.mapNotNull { it.attachedTracker }.distinctBy { it.id }
-		val chains = listOf(
-			listOf(s.hipTracker, s.leftUpperLegTracker, s.leftLowerLegTracker, s.leftFootTracker),
-			listOf(s.hipTracker, s.rightUpperLegTracker, s.rightLowerLegTracker, s.rightFootTracker),
-			listOf(s.chestTracker, s.leftUpperArmTracker, s.leftLowerArmTracker, s.leftHandTracker),
-			listOf(s.chestTracker, s.rightUpperArmTracker, s.rightLowerArmTracker, s.rightHandTracker),
-		).map { chain -> chain.mapNotNull { it?.id } }
-		val frame = bodyEvidence.observe(health.observe(confidence.observe(sensors.sample(trackers, emptyList(), now))), chains)
+		val quality = s.humanPoseManager.adaptiveMeasurementQuality
+		val frame = s.humanPoseManager.adaptiveEstimator.applyReliability(
+			quality.observe(s, now),
+			s.allHumanBones.mapNotNull { it.attachedTracker }.distinctBy { it.id },
+		)
 		val samples = frame.samples.associateBy { it.id }
-		val continuous = lastTime?.let { now - it in 1..250_000_000L } == true
-		val highMotion = bodyEvidence.motion == AdaptiveMotionState.HIGH_MOTION || activity?.state == AdaptiveActivityState.HIGH_MOTION || activity?.state == AdaptiveActivityState.RUNNING
+		val layout = bones.map { Layout(it, it.parent, it.length, it.rotationOffset, it.attachedTracker) }
+		val continuous = lastTime?.let { now - it in 1..250_000_000L } == true &&
+			layout == previousLayout &&
+			bones.filter { it.parent == null }.all { bone ->
+				previousRootPositions[bone]?.let { (bone.getPosition() - it).len() <= 0.25f } == true
+			}
+		if (!continuous) {
+			previous.clear()
+			previousMeasurements.clear()
+			recovery.clear()
+		}
+		val highMotion = quality.motion == AdaptiveMotionState.HIGH_MOTION || activity?.state == AdaptiveActivityState.HIGH_MOTION || activity?.state == AdaptiveActivityState.RUNNING
 		val followers = mapOf(
 			s.leftFootTrackerBone to s.leftFootBone,
 			s.rightFootTrackerBone to s.rightFootBone,
@@ -113,12 +130,29 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 			s.leftUpperShoulderBone to s.upperChestBone,
 			s.rightUpperShoulderBone to s.upperChestBone,
 		)
+		val recoveryTrackerIds = mutableSetOf<Int>()
 		val segments = bones.map { bone ->
 			val tracker = bone.attachedTracker
 			val sample = samples[tracker?.id]
-			val measured = if (tracker != null && !tracker.hasPosition) recovery.getOrPut(bone) { OrientationRecovery() }.update(bone.getGlobalRotation(), (sample?.confidence?.score ?: 0f) > 0f, now) else bone.getGlobalRotation()
+			val measured = if (tracker != null && !tracker.hasPosition) {
+				val model = recovery.getOrPut(bone) { OrientationRecovery() }
+				val result = model.update(bone.getGlobalRotation(), MeasurementQualityGate.trusted(sample), now)
+				if (model.usingPrediction) recoveryTrackerIds.add(tracker.id)
+				result
+			} else {
+				bone.getGlobalRotation()
+			}
+			val priorMeasurement = previousMeasurements[bone]
+			val priorPose = previous[bone]
+			// Transport the last correction with measured motion instead of dragging a
+			// moving limb toward last frame's world orientation. Discontinuities re-seed.
+			val canSeed = continuous &&
+				priorMeasurement != null &&
+				priorPose != null &&
+				priorMeasurement.angleToR(measured) <= Math.toRadians(45.0)
+			val seed = if (canSeed) (measured * priorMeasurement!!.inv() * priorPose!!).unit() else null
 			val speed = sample?.angularSpeedRadiansPerSecond
-			val temporal = if (continuous && !highMotion && (speed == null || speed < 0.5f)) 0.15f else 0f
+			val temporal = if (canSeed && !highMotion && (speed == null || speed < 0.5f)) 0.15f else 0f
 			PoseSegment(
 				indices[bone.parent] ?: -1,
 				bone.length,
@@ -126,10 +160,11 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 				measured,
 				sample?.confidence?.score ?: 0.35f,
 				bone.parent == null || bone === s.neckBone || (tracker?.hasPosition == true && !tracker.isImu()) || bone.boneType.name.endsWith("TRACKER"),
-				if (continuous) previous[bone] else null,
+				if (canSeed) priorPose else null,
 				temporal,
 				indices[followers[bone]] ?: -1,
 				followers[bone]?.let { it.rotationOffset.inv() * bone.rotationOffset } ?: Quaternion.IDENTITY,
+				seed,
 			)
 		}
 		val anchors = mutableListOf<PoseAnchor>()
@@ -145,16 +180,30 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		}
 		elbow(s.leftUpperArmBone, s.leftLowerArmBone, s.leftHandTrackerBone, s.isTrackingLeftArmFromController, s.leftHandTracker)
 		elbow(s.rightUpperArmBone, s.rightLowerArmBone, s.rightHandTrackerBone, s.isTrackingRightArmFromController, s.rightHandTracker)
-		fun foot(bone: Bone, contact: FootContactSnapshot, strength: Float) {
+		val anchoredFeet = mutableSetOf<String>()
+		fun foot(bone: Bone, contact: FootContactSnapshot, strength: Float, trackers: List<Tracker?>) {
+			if (trackers.any { tracker ->
+					tracker == null ||
+						!tracker.status.sendData ||
+						!tracker.hasRotation ||
+						tracker.lastRotationUpdateNanos?.let { now - it !in 0..250_000_000L } == true ||
+						(tracker.lastRotationUpdateNanos == null && tracker.usesTimeout) ||
+						!MeasurementQualityGate.trusted(samples[tracker.id])
+				}
+			) {
+				return
+			}
 			val plant = contact.plantPosition ?: return
 			if (contact.state != FootContactState.PLANTED) return
+			if (!FootCorrectionPolicy.ownsCorrection(true, contact, strength)) return
 			anchors.add(PoseAnchor(indices.getValue(bone), Vector3(plant.x, bone.getTailPosition().y, plant.z), 30f * contact.weight * strength))
+			anchoredFeet.add(bone.boneType.name)
 		}
 		if (s.legTweaks.adaptiveAnchoringEligible) {
 			val strength = config.footAnchorStrength.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
 			if (strength > 0f) {
-				foot(s.leftFootTrackerBone, s.legTweaks.adaptiveLeftFoot.snapshot, strength)
-				foot(s.rightFootTrackerBone, s.legTweaks.adaptiveRightFoot.snapshot, strength)
+				foot(s.leftFootTrackerBone, s.legTweaks.adaptiveLeftFoot.snapshot, strength, listOf(s.leftFootTracker, s.leftUpperLegTracker, s.leftLowerLegTracker, s.headTracker))
+				foot(s.rightFootTrackerBone, s.legTweaks.adaptiveRightFoot.snapshot, strength, listOf(s.rightFootTracker, s.rightUpperLegTracker, s.rightLowerLegTracker, s.headTracker))
 			}
 		}
 		val joints = (
@@ -189,9 +238,12 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		bones.forEachIndexed { i, bone ->
 			bone.setRotationRaw(result.rotations[i])
 			previous[bone] = result.rotations[i]
+			previousMeasurements[bone] = segments[i].measured
 		}
 		// Output tracker offsets follow the optimized segment, preserving configured mounting geometry.
 		listOf(
+			s.leftElbowTrackerBone to s.leftUpperArmBone,
+			s.rightElbowTrackerBone to s.rightUpperArmBone,
 			s.leftKneeTrackerBone to s.leftUpperLegBone,
 			s.rightKneeTrackerBone to s.rightUpperLegBone,
 			s.leftFootTrackerBone to s.leftFootBone,
@@ -204,9 +256,14 @@ class AdaptivePoseSolver(private val config: AdaptiveTrackingConfig) {
 		s.updateBones()
 		predictedPose = bones.associate { it.boneType.name to it.getTailPosition() }
 		capturePredictions(bones, now)
+		previousLayout = layout
+		previousRootPositions.clear()
+		bones.filter { it.parent == null }.forEach { previousRootPositions[it] = it.getPosition() }
+		footAnchorsApplied = anchoredFeet.toSet()
+		lastSolvedTimestampNanos = now
 		lastTime = now
 		val global = frame.samples.mapNotNull { it.confidence?.score }.average().takeIf { it.isFinite() }?.toFloat() ?: 0f
-		diagnostic = PoseSolverDiagnostic(result.initialError, result.finalError, System.nanoTime() - started, global)
+		diagnostic = PoseSolverDiagnostic(result.initialError, result.finalError, System.nanoTime() - started, global, recoveryTrackerIds.toList())
 	}
 
 	private fun capturePredictions(bones: List<Bone>, now: Long) {

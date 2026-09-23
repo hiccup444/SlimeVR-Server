@@ -49,6 +49,7 @@ class CalibrationLearnerTest {
 				)
 			}
 			assertEquals(expectedRate, prediction!!, 0.00002)
+			assertEquals(expectedRate, learner.observe(hardwareId, 22.4, null, 60_300_000_000L)!!, 0.00002)
 			assertTrue(learner.diagnostics(hardwareId)!!.trustedObservationSeconds >= 60.0)
 			val persisted = store.load(hardwareId).get(2, TimeUnit.SECONDS)
 			assertEquals(expectedRate, assertNotNull(persisted).predictRate(20.0)!!, 0.00002)

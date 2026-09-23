@@ -33,6 +33,15 @@ class AdaptiveTelemetryRecorderTest {
 	}
 
 	@Test
+	fun yawHoldoverStateIsAvailableInRecordedDiagnostics() {
+		val diagnostic = TrackerDriftDiagnostic(7, 0.01f, DriftResidual(0f, 0f, 0.0, false, "ARM_MOTION"), 0.0005, holdoverActive = true)
+		val frame = AdaptiveTelemetryFrame(1L, emptyList(), emptyList(), 0L, driftDiagnostics = listOf(diagnostic))
+		val json = ObjectMapper().readTree(ObjectMapper().writeValueAsString(frame.toRecord()))
+		assertTrue(json["driftDiagnostics"][0]["holdoverActive"].asBoolean())
+		assertEquals(0.0005, json["driftDiagnostics"][0]["predictedRateRadiansPerSecond"].asDouble(), 1e-9)
+	}
+
+	@Test
 	fun liveDiagnosticsDoNotCreateRecordingFiles() {
 		val path = directory.resolve("live")
 		val telemetry = AdaptiveTrackingTelemetry(
@@ -45,6 +54,45 @@ class AdaptiveTelemetryRecorderTest {
 		assertNotNull(telemetry.latestFrame)
 		assertFalse(Files.exists(path))
 		telemetry.close()
+	}
+
+	@Test
+	fun recordedInputRotationMatchesThePoseTickBeforeNewBiasTakesEffect() {
+		val tracker = TestTrackerSet().leftThigh
+		val timestamp = 100_000_000L
+		tracker.dataTick(timestamp)
+		val poseInput = SensorStateManager().sample(listOf(tracker), emptyList(), timestamp)
+		tracker.adaptiveYawBiasRadians = 0.1f
+		val telemetry = AdaptiveTrackingTelemetry(
+			AdaptiveTrackingConfig().apply {
+				liveDiagnosticsEnabled = true
+				confidenceDiagnosticsEnabled = false
+			},
+		)
+		try {
+			telemetry.update(listOf(tracker), emptyList(), timestamp, qualityFrame = poseInput)
+			assertEquals(poseInput.samples.single().adjustedRotation, telemetry.latestFrame!!.samples.single().adjustedRotation)
+			assertTrue(tracker.getRotation() != telemetry.latestFrame!!.samples.single().adjustedRotation)
+		} finally {
+			telemetry.close()
+		}
+	}
+
+	@Test
+	fun liveDiagnosticsExposeRecordingStatusForTheTestScreen() {
+		val pose = HumanPoseManager(TestTrackerSet().allL)
+		pose.adaptiveTrackingConfig.liveDiagnosticsEnabled = true
+		pose.adaptiveTrackingConfig.telemetryDirectory = directory.toString()
+		pose.adaptiveTelemetry.update(emptyList(), emptyList(), 1L)
+		val idle = ObjectMapper().readTree(assertNotNull(pose.adaptiveDiagnosticsJson()))["recording"]
+		assertFalse(idle["requested"].asBoolean())
+		assertEquals(50, idle["sampleRateHz"].asInt())
+		pose.adaptiveTrackingConfig.telemetryEnabled = true
+		pose.adaptiveTelemetry.update(emptyList(), emptyList(), 21_000_001L)
+		val active = ObjectMapper().readTree(assertNotNull(pose.adaptiveDiagnosticsJson()))["recording"]
+		assertTrue(active["requested"].asBoolean())
+		assertTrue(active["active"].asBoolean())
+		pose.adaptiveTelemetry.close()
 	}
 
 	@Test
@@ -117,6 +165,23 @@ class AdaptiveTelemetryRecorderTest {
 		recorder.awaitClosed()
 		assertNull(recorder.failure)
 		assertEquals(1, Files.readAllLines(assertNotNull(recorder.outputPath)).size)
+	}
+
+	@Test
+	fun longRecordingRotatesFilesWithoutLosingFrames() {
+		val frame = SensorStateManager().sample(emptyList(), emptyList(), 1L)
+		val line = ObjectMapper().writeValueAsString(mapOf("type" to "frame", "droppedFrames" to 0L, "frame" to frame.toRecord()))
+		val limit = 80L + 2L * (line.toByteArray().size + 2)
+		val recorder = AdaptiveTelemetryRecorder(directory.toString(), maxBytes = limit, maxParts = 3)
+		repeat(4) { recorder.offer(frame.copy(timestampNanos = it.toLong() + 1)) }
+		recorder.close()
+		recorder.awaitClosed()
+		assertNull(recorder.failure)
+		assertFalse(recorder.sizeLimitReached)
+		assertEquals(4L, recorder.writtenFrames)
+		assertEquals(2, recorder.outputPaths.size)
+		assertEquals(3, Files.readAllLines(recorder.outputPaths[0]).size)
+		assertEquals(3, Files.readAllLines(recorder.outputPaths[1]).size)
 	}
 
 	@Test

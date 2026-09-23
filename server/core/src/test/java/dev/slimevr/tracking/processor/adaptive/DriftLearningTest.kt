@@ -60,4 +60,54 @@ class DriftLearningTest {
 		corrector.update(residual, -1)
 		assertEquals(0f, corrector.biasRadians)
 	}
+
+	@Test
+	fun matureRateCarriesArmBiasOnlyBrieflyAfterTrustedEvidence() {
+		val corrector = AdaptiveYawCorrector()
+		val trusted = DriftResidual(0f, 0f, 30.0, true, "SUPPORTED_PERSISTENT_RESIDUAL")
+		assertEquals(0f, corrector.predict(0.0005, 100_000_000L))
+		corrector.update(trusted, 200_000_000L)
+		val advanced = corrector.predict(0.0005, 300_000_000L)
+		assertEquals(0.00005f, advanced, 0.000001f)
+		assertTrue(corrector.predictionActive)
+		assertEquals(advanced, corrector.predict(null, 400_000_000L))
+		assertFalse(corrector.predictionActive)
+		assertEquals(advanced, corrector.predict(0.0005, 31_000_000_000L))
+	}
+
+	@Test
+	fun holdoverRateIsCappedAndMeasurementCorrectionResumes() {
+		val corrector = AdaptiveYawCorrector()
+		val trusted = DriftResidual(0f, 0f, 30.0, true, "SUPPORTED_PERSISTENT_RESIDUAL")
+		corrector.update(trusted, 0L)
+		corrector.update(trusted, 100_000_000L)
+		assertEquals(0.0001f, corrector.predict(0.02, 200_000_000L), 0.000001f)
+		assertTrue(corrector.predictionActive)
+		assertEquals(0f, corrector.update(trusted, 300_000_000L), 0.000001f)
+		assertFalse(corrector.predictionActive)
+		corrector.reset()
+		assertEquals(0f, corrector.predict(0.0005, 400_000_000L))
+	}
+
+	@Test
+	fun holdoverCannotMoveFarFromLastTrustedArmBias() {
+		val corrector = AdaptiveYawCorrector()
+		val trusted = DriftResidual(0f, 0f, 30.0, true, "SUPPORTED_PERSISTENT_RESIDUAL")
+		corrector.update(trusted, 0L)
+		corrector.update(trusted, 100_000_000L)
+		for (step in 2..250) corrector.predict(0.001, step * 100_000_000L)
+		assertEquals(Math.toRadians(0.5).toFloat(), corrector.biasRadians, 0.000001f)
+		assertFalse(corrector.predictionActive)
+	}
+
+	@Test
+	fun footHoldoverUsesTheSmallerLimit() {
+		val corrector = AdaptiveYawCorrector()
+		val trusted = DriftResidual(0f, 0f, 30.0, true, "SUPPORTED_PERSISTENT_RESIDUAL")
+		corrector.update(trusted, 0L)
+		corrector.update(trusted, 100_000_000L)
+		val footLimit = Math.toRadians(0.25).toFloat()
+		for (step in 2..250) corrector.predict(0.001, step * 100_000_000L, maximumHoldoverRadians = footLimit)
+		assertEquals(footLimit, corrector.biasRadians, 0.000001f)
+	}
 }

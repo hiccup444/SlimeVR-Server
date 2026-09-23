@@ -467,7 +467,8 @@ class TrackersUDPServer(private val port: Int, name: String, private val tracker
 				if (connection.lastPingPacketId == packet.pingId) {
 					for (t in connection.trackers.values) {
 						t.ping = (System.currentTimeMillis() - connection.lastPingPacketTime).toInt() / 2
-						t.dataTick()
+						// A ping proves device liveness, not a new orientation sample.
+						t.heartbeat()
 					}
 				} else {
 					LogManager.debug(

@@ -19,6 +19,8 @@ data class PoseSegment(
 	val temporalWeight: Float = 0f,
 	val rotationSource: Int = -1,
 	val sourceOffset: Quaternion = Quaternion.IDENTITY,
+	/** Motion-predicted previous solution; distinct from the measurement being fitted. */
+	val initialRotation: Quaternion? = previous,
 )
 
 data class PoseAnchor(val segment: Int, val target: Vector3, val weight: Float, val otherSegment: Int = -1)
@@ -44,6 +46,7 @@ class PoseOptimizer {
 			require(valid(s.measured) && valid(s.rootPosition) && s.confidence in 0f..1f)
 			require(s.temporalWeight.isFinite() && s.temporalWeight >= 0f && (s.previous == null || valid(s.previous)))
 			require(s.rotationSource in -1 until index && valid(s.sourceOffset))
+			require(s.initialRotation == null || valid(s.initialRotation))
 		}
 		anchors.forEach { require(it.segment in segments.indices && it.otherSegment in -1 until segments.size && valid(it.target) && it.weight.isFinite() && it.weight >= 0f) }
 		joints.forEach {
@@ -96,8 +99,22 @@ class PoseOptimizer {
 			}
 			return total
 		}
+		// Report the measured-pose objective, and never accept a worse warm start.
 		val initial = error()
-		var best = initial
+		val measuredRotations = rotations.toList()
+		for (i in segments.indices) {
+			val s = segments[i]
+			if (!s.fixed && s.rotationSource < 0) {
+				rotations[i] = (s.initialRotation ?: s.measured).unit()
+			}
+		}
+		val warmError = error()
+		var best = if (warmError.isFinite() && warmError <= initial) {
+			warmError
+		} else {
+			measuredRotations.forEachIndexed { i, rotation -> rotations[i] = rotation }
+			initial
+		}
 		for (degrees in listOf(4.0, 2.0, 1.0)) {
 			val half = Math.toRadians(degrees).toFloat() / 2f
 			for (i in segments.indices) {

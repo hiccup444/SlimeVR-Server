@@ -19,18 +19,96 @@ const degrees = (value: unknown) => {
     : `${((number * 180) / Math.PI).toFixed(2)}°`;
 };
 
+const scenarios = [
+  {
+    id: 'standing',
+    name: 'Quiet standing',
+    steps:
+      'Stand still for up to 30 minutes. Mark any visible drift or yaw reset.',
+    expect:
+      'Both feet should usually show planted; yaw bias should change slowly or stay still.',
+  },
+  {
+    id: 'turns',
+    name: 'Full turns',
+    steps:
+      'Turn slowly and quickly in both directions, then stop after each turn.',
+    expect:
+      'Tracking should stay continuous; yaw learning should pause during motion.',
+  },
+  {
+    id: 'walking',
+    name: 'Walking and pivots',
+    steps: 'Walk at several speeds, pivot, and take quick steps.',
+    expect:
+      'The moving foot should release promptly; a planted foot should not slide visibly.',
+  },
+  {
+    id: 'poses',
+    name: 'Crouch, sit, lie, kneel',
+    steps: 'Repeat each transition and try cross-legged sitting.',
+    expect:
+      'The solver should permit unusual poses without false floor or foot locks.',
+  },
+  {
+    id: 'rapid',
+    name: 'Rapid movement',
+    steps: 'Dance or change direction repeatedly for several minutes.',
+    expect:
+      'Corrections should pause under high motion; output should remain responsive.',
+  },
+  {
+    id: 'disturbance',
+    name: 'Tracker disturbance',
+    steps:
+      'Mark the moment you rotate one tracker on its strap, then let it recover.',
+    expect:
+      'Confidence should fall or learning should pause. Note any pose snap.',
+  },
+  {
+    id: 'disconnect',
+    name: 'Disconnect and reconnect',
+    steps:
+      'Disconnect one tracker briefly, reconnect it, and mark both moments.',
+    expect: 'The log should show stale or missing input and a smooth return.',
+  },
+  {
+    id: 'temperature',
+    name: 'Warm-up comparison',
+    steps:
+      'Compare a cold start with a session after the trackers have warmed.',
+    expect:
+      'Temperature is recorded when available; unsupported yaw roles should not learn bias.',
+  },
+] as const;
+
+type TestSession = {
+  id: string;
+  scenario: string;
+  condition: string;
+  trial: string;
+  startedAt: string;
+  startedAtMs: number;
+};
+
 export function AdaptiveDebugPanel({
   frame,
   connected,
   enabled,
   settings,
+  activeFeatures,
   onEnable,
+  onStartRecording,
+  onStopRecording,
 }: {
   frame: RecordValue | null;
   connected: boolean;
   enabled: boolean;
   settings: unknown;
+  activeFeatures: string[];
   onEnable: () => void;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
 }) {
   const buffer = useRef<{ line: string; bytes: number }[]>([]);
   const bytes = useRef(0);
@@ -43,15 +121,22 @@ export function AdaptiveDebugPanel({
   const [clock, setClock] = useState(Date.now());
   const [note, setNote] = useState('');
   const [exportError, setExportError] = useState('');
+  const [scenarioId, setScenarioId] = useState<string>('standing');
+  const [condition, setCondition] = useState('Baseline');
+  const [trial, setTrial] = useState('1');
+  const [session, setSession] = useState<TestSession | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const sessionRef = useRef<TestSession | null>(null);
   const previousState = useRef('');
+  const previousRecordingState = useRef('');
 
   function append(value: unknown) {
     const line = JSON.stringify(value);
     const size = new TextEncoder().encode(line).length + 1;
-    if (size > 16 * 1024 * 1024) return;
+    if (size > 64 * 1024 * 1024) return;
     buffer.current.push({ line, bytes: size });
     bytes.current += size;
-    while (bytes.current > 16 * 1024 * 1024 || buffer.current.length > 2400) {
+    while (bytes.current > 64 * 1024 * 1024 || buffer.current.length > 10000) {
       bytes.current -= buffer.current.shift()!.bytes;
       removed.current++;
     }
@@ -92,7 +177,7 @@ export function AdaptiveDebugPanel({
     lastTimestamp.current = timestamp;
     const receivedAt = new Date().toISOString();
     setLastReceived(Date.now());
-    append({ type: 'frame', receivedAt, droppedFrames: 0, frame, settings });
+    append({ type: 'frame', receivedAt, frame });
     const samples = Array.isArray(frame.samples)
       ? frame.samples.map(object)
       : [];
@@ -119,9 +204,21 @@ export function AdaptiveDebugPanel({
         ? [`${String(sample.name)}: ${reasons.map(label).join(', ')}`]
         : [];
     });
-    const state = [...contacts, ...drift, ...problems].join(' | ');
+    const recovery = object(frame.poseDiagnostic).recoveryTrackerIds;
+    const recovering = Array.isArray(recovery)
+      ? recovery.map((id) => `Tracker ${String(id)}: pose recovery active`)
+      : [];
+    const state = [...contacts, ...drift, ...problems, ...recovering].join(
+      ' | '
+    );
     if (state && state !== previousState.current) {
       previousState.current = state;
+      append({
+        type: 'state-change',
+        receivedAt,
+        timestampNanos: frame.timestampNanos,
+        state,
+      });
       setEvents((previous) =>
         [`${new Date().toLocaleTimeString()} ${state}`, ...previous].slice(
           0,
@@ -129,7 +226,91 @@ export function AdaptiveDebugPanel({
         )
       );
     }
-  }, [frame, enabled, connected, settings]);
+  }, [frame, enabled, connected]);
+
+  const recording = object(frame?.recording);
+  const recordingFiles = Array.isArray(recording.files)
+    ? recording.files.filter((file): file is string => typeof file === 'string')
+    : [];
+  const recordingActive = recording.active === true;
+  const recordingRequested =
+    object(settings).telemetryEnabled === true || recording.requested === true;
+  const writtenFrames = numeric(recording.writtenFrames) ?? 0;
+  const droppedFrames = numeric(recording.droppedFrames) ?? 0;
+
+  useEffect(() => {
+    if (!frame) return;
+    const state = JSON.stringify({
+      active: recording.active,
+      finalizing: recording.finalizing,
+      sizeLimitReached: recording.sizeLimitReached,
+      failure: recording.failure,
+      files: recordingFiles.length,
+    });
+    if (state === previousRecordingState.current) return;
+    previousRecordingState.current = state;
+    const receivedAt = new Date().toISOString();
+    append({
+      type: 'recording-state',
+      receivedAt,
+      timestampNanos: frame.timestampNanos,
+      recording,
+    });
+    setEvents((previous) =>
+      [
+        `${new Date().toLocaleTimeString()} Recording: ${recordingActive ? 'active' : 'stopped'}, ${recordingFiles.length} file(s)`,
+        ...previous,
+      ].slice(0, 30)
+    );
+  }, [frame]);
+
+  function startSession() {
+    const next: TestSession = {
+      id: `${Date.now()}`,
+      scenario: scenarioId,
+      condition,
+      trial: trial.trim() || '1',
+      startedAt: new Date().toISOString(),
+      startedAtMs: Date.now(),
+    };
+    buffer.current = [];
+    bytes.current = 0;
+    removed.current = 0;
+    previousState.current = '';
+    previousRecordingState.current = '';
+    setHistory([]);
+    setEvents([]);
+    sessionRef.current = next;
+    setSession(next);
+    setStopping(false);
+    append({ type: 'session-start', ...next, settings });
+    onStartRecording();
+  }
+
+  function stopSession() {
+    append({
+      type: 'session-end',
+      receivedAt: new Date().toISOString(),
+      timestampNanos: frame?.timestampNanos ?? null,
+      sessionId: sessionRef.current?.id,
+    });
+    onStopRecording();
+    setStopping(true);
+  }
+
+  useEffect(() => {
+    if (
+      !stopping ||
+      !frame ||
+      recording.requested === true ||
+      recording.finalizing === true
+    )
+      return;
+    download();
+    sessionRef.current = null;
+    setSession(null);
+    setStopping(false);
+  }, [frame, stopping]);
 
   function mark() {
     const message = note.trim() || 'Visible tracking problem';
@@ -137,6 +318,8 @@ export function AdaptiveDebugPanel({
       type: 'marker',
       receivedAt: new Date().toISOString(),
       timestampNanos: frame?.timestampNanos ?? null,
+      resetEpoch: frame?.resetEpoch ?? null,
+      sessionId: sessionRef.current?.id ?? null,
       message,
     });
     setEvents((previous) =>
@@ -158,8 +341,10 @@ export function AdaptiveDebugPanel({
         modifiedBuild: !__GIT_CLEAN__,
         exportedAt: new Date().toISOString(),
         omittedEntries: removed.current,
+        session: sessionRef.current,
+        serverRecordingFiles: recordingFiles,
         settings,
-        note: 'Sampled UI diagnostics at up to 4 Hz. Not raw packets or full-rate telemetry.',
+        note: 'Sampled UI diagnostics at up to 4 Hz. Send this log together with every server recording part. Neither contains raw IMU packets.',
       });
       const url = URL.createObjectURL(
         new Blob(
@@ -169,7 +354,7 @@ export function AdaptiveDebugPanel({
       );
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `slimevr-debug-${new Date().toISOString().replaceAll(':', '-')}.jsonl`;
+      anchor.download = `slimevr-test-${sessionRef.current?.scenario ?? 'debug'}-${new Date().toISOString().replaceAll(':', '-')}.jsonl`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -187,12 +372,20 @@ export function AdaptiveDebugPanel({
     frame && Array.isArray(frame.driftDiagnostics)
       ? frame.driftDiagnostics.map(object)
       : [];
+  const activity = object(frame?.activity);
+  const solver = object(frame?.poseDiagnostic);
+  const recoveryIds = Array.isArray(solver.recoveryTrackerIds)
+    ? solver.recoveryTrackerIds
+    : [];
+  const solverMilliseconds = numeric(solver.processingNanos);
+  const scenario =
+    scenarios.find((item) => item.id === scenarioId) ?? scenarios[0];
   return (
     <section
       className="flex flex-col gap-3 rounded-lg bg-background-60 p-4 text-background-10"
       aria-label="Live tracking debug"
     >
-      <h2 className="text-xl font-bold">Live tracking debug</h2>
+      <h2 className="text-xl font-bold">Tracking test and debug</h2>
       <p role="status">
         {!connected
           ? 'Disconnected from server'
@@ -202,6 +395,75 @@ export function AdaptiveDebugPanel({
               ? 'Waiting for fresh tracking data'
               : `Live · ${samples.length} trackers · updating up to 4 times per second`}
       </p>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <label className="flex flex-col gap-1 text-sm">
+          Movement
+          <select
+            className="rounded bg-background-80 p-2"
+            value={scenarioId}
+            disabled={session !== null}
+            onChange={(event) => setScenarioId(event.target.value)}
+          >
+            {scenarios.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Comparison
+          <select
+            className="rounded bg-background-80 p-2"
+            value={condition}
+            disabled={session !== null}
+            onChange={(event) => setCondition(event.target.value)}
+          >
+            <option>Baseline</option>
+            <option>Feature on</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Trial number
+          <input
+            className="rounded bg-background-80 p-2"
+            value={trial}
+            maxLength={20}
+            disabled={session !== null}
+            onChange={(event) => setTrial(event.target.value)}
+          />
+        </label>
+      </div>
+      <p className="text-sm">
+        Do: {scenario.steps} Expected: {scenario.expect}
+      </p>
+      <p className="text-sm">
+        The comparison label names the log. Choose and save correction settings
+        below before a feature-on trial.
+      </p>
+      <p className="text-sm">
+        Confirmed adaptive features:{' '}
+        {settings === null
+          ? 'loading settings'
+          : activeFeatures.length
+            ? activeFeatures.join(', ')
+            : 'none'}
+      </p>
+      {settings !== null &&
+        condition === 'Baseline' &&
+        activeFeatures.length > 0 && (
+          <p role="alert">
+            Baseline is selected while adaptive features are on. Save them off
+            below for a clean comparison.
+          </p>
+        )}
+      {settings !== null &&
+        condition === 'Feature on' &&
+        activeFeatures.length === 0 && (
+          <p role="alert">
+            Feature on is selected, but no adaptive feature is enabled yet.
+          </p>
+        )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="primary"
@@ -210,16 +472,69 @@ export function AdaptiveDebugPanel({
         >
           Enable live debug
         </Button>
+        <Button
+          variant="primary"
+          disabled={!connected || session !== null}
+          onClick={startSession}
+        >
+          Start recorded test
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={session === null || stopping}
+          onClick={stopSession}
+        >
+          {stopping ? 'Finalizing recording' : 'Stop and export notes'}
+        </Button>
         <Button variant="secondary" onClick={download}>
-          Export debug log
+          Export notes again
         </Button>
       </div>
       <p className="text-sm">
-        The log keeps recent snapshots and your markers while this page is open,
-        up to 16 MiB. Export before leaving this page. Older entries are dropped
-        when full. Enable Record adaptive telemetry below for a separate
-        full-rate server recording.
+        A recorded test saves server telemetry at the selected sample rate and a
+        separate UI note log. The UI log holds up to 64 MiB or 10,000 entries
+        while this page is open; its header reports omitted entries. Send the
+        exported notes and every server recording file together.
       </p>
+      <p role="status" className="text-sm">
+        {session
+          ? `${session.condition} · ${scenario.name} · trial ${session.trial} · ${Math.floor((clock - session.startedAtMs) / 1000)} seconds · `
+          : ''}
+        {recordingActive
+          ? `Server recording: ${writtenFrames} frames in ${recordingFiles.length} file(s), ${droppedFrames} dropped`
+          : recordingRequested
+            ? 'Server recording is starting or finalizing'
+            : 'Server recording is off'}
+      </p>
+      {recording.sizeLimitReached === true && (
+        <p role="alert">
+          Recording reached its file limit. Stop and export; this test is
+          incomplete.
+        </p>
+      )}
+      {typeof recording.failure === 'string' && (
+        <p role="alert">Server recording failed: {recording.failure}</p>
+      )}
+      {recordingFiles.length > 0 && (
+        <div className="text-sm">
+          <p>Server files to keep:</p>
+          <ul className="list-disc pl-5">
+            {recordingFiles.map((file) => (
+              <li key={file}>{file}</li>
+            ))}
+          </ul>
+          {typeof window.electronAPI !== 'undefined' && (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                window.electronAPI.openAdaptiveRecording(recordingFiles[0])
+              }
+            >
+              Show recording in folder
+            </Button>
+          )}
+        </div>
+      )}
       {exportError && <p role="alert">{exportError}</p>}
       <div className="flex flex-wrap gap-2">
         <input
@@ -240,6 +555,12 @@ export function AdaptiveDebugPanel({
       </div>
       {enabled && frame && (
         <div className={stale || !connected ? 'opacity-50' : ''}>
+          <p className="text-sm">
+            Activity: {label(activity.state)} · optimizer time:{' '}
+            {solverMilliseconds === null
+              ? 'unavailable'
+              : `${(solverMilliseconds / 1e6).toFixed(2)} ms`}
+          </p>
           <p>Lowest tracker confidence over the last 120 samples</p>
           <svg
             viewBox="0 0 400 65"
@@ -267,6 +588,55 @@ export function AdaptiveDebugPanel({
                 .join(' ')}
             />
           </svg>
+          <details className="my-2">
+            <summary>Tracker health and freshness ({samples.length})</summary>
+            <div className="grid gap-2 py-2 sm:grid-cols-2">
+              {samples.map((sample) => {
+                const confidence = object(sample.confidence);
+                const age = numeric(sample.packetAgeNanos);
+                const temperature = numeric(sample.temperatureCelsius);
+                const health = object(sample.health);
+                const healthReasons = Array.isArray(health.reasons)
+                  ? health.reasons.filter(
+                      (reason): reason is string =>
+                        typeof reason === 'string' && reason !== 'HEALTHY'
+                    )
+                  : [];
+                return (
+                  <div
+                    key={String(sample.id)}
+                    className="rounded bg-background-80 p-2 text-sm"
+                  >
+                    <strong>
+                      {String(sample.name ?? sample.role ?? sample.id)}
+                    </strong>{' '}
+                    · {label(sample.status)}
+                    <p>
+                      Confidence:{' '}
+                      {numeric(confidence.score)?.toFixed(2) ?? 'unavailable'} ·
+                      packet age:{' '}
+                      {age === null
+                        ? 'unavailable'
+                        : `${(age / 1e6).toFixed(0)} ms`}{' '}
+                      · temperature:{' '}
+                      {temperature === null
+                        ? 'unavailable'
+                        : `${temperature.toFixed(1)} °C`}
+                    </p>
+                    {health.suspectedFrozen === true && (
+                      <p>Suspected frozen orientation</p>
+                    )}
+                    {recoveryIds.includes(sample.id) && (
+                      <p>Pose recovery active</p>
+                    )}
+                    {healthReasons.length > 0 && (
+                      <p>Health: {healthReasons.map(label).join(', ')}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
           <div className="grid gap-2 sm:grid-cols-2">
             {Object.entries(object(frame.footContacts)).map(
               ([side, contact]) => (
@@ -291,6 +661,42 @@ export function AdaptiveDebugPanel({
                   {degrees(object(item.residual).errorRadians)}
                 </p>
                 <p>{label(object(item.residual).reason)}</p>
+                {item.holdoverActive === true && (
+                  <p className="text-sm">
+                    Learned temperature drift rate is carrying this correction
+                    while fresh evidence is unavailable.
+                  </p>
+                )}
+                <p className="text-sm">
+                  Learning:{' '}
+                  {object(item.residual).eligibleForLearning === true
+                    ? 'eligible'
+                    : 'paused'}
+                  {' · '}Pose confidence:{' '}
+                  {numeric(object(item.poseConfidence).score)?.toFixed(2) ??
+                    'unavailable'}
+                </p>
+                {Array.isArray(object(item.poseConfidence).reasons) && (
+                  <p className="text-sm">
+                    Evidence:{' '}
+                    {(object(item.poseConfidence).reasons as unknown[])
+                      .map(label)
+                      .join(', ')}
+                  </p>
+                )}
+                <p className="text-sm">
+                  Mode: {label(item.correctionMode)} · learning duty:{' '}
+                  {numeric(object(item.learning).learningDutyCycle) === null
+                    ? 'unavailable'
+                    : `${(Number(object(item.learning).learningDutyCycle) * 100).toFixed(1)}%`}
+                </p>
+                <p className="text-sm">
+                  Context restarts:{' '}
+                  {String(object(item.learning).contextRestarts ?? 0)}
+                  {item.correctionMode === 'PLANTED_REFERENCE_INCREMENTAL_ONLY'
+                    ? ' · Resists new drift during contact; does not establish absolute foot heading.'
+                    : ''}
+                </p>
               </div>
             ))}
           </div>

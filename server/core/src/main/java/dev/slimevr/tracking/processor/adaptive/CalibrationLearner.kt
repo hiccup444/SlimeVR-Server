@@ -32,6 +32,7 @@ class CalibrationLearner(
 	private val lock = Any()
 	private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
 	private var closed = false
+	private var clearInProgress: CompletableFuture<Boolean>? = null
 
 	init {
 		require(maxProfiles in 1..MAX_CACHED_PROFILES)
@@ -48,7 +49,7 @@ class CalibrationLearner(
 		residual: DriftResidual?,
 		now: Long,
 	): Double? = synchronized(lock) {
-		if (closed || hardwareId.isBlank() || hardwareId.length > CalibrationStore.MAX_HARDWARE_ID_CHARS) return null
+		if (closed || clearInProgress != null || hardwareId.isBlank() || hardwareId.length > CalibrationStore.MAX_HARDWARE_ID_CHARS) return null
 		val entry = getOrLoad(hardwareId)
 		if (!entry.loaded) {
 			resetTemporal(entry)
@@ -96,7 +97,7 @@ class CalibrationLearner(
 
 	/** Returns a future that completes after the one-time asynchronous load for this ID. */
 	fun readiness(hardwareId: String): CompletableFuture<Boolean> = synchronized(lock) {
-		if (closed || hardwareId.isBlank() || hardwareId.length > CalibrationStore.MAX_HARDWARE_ID_CHARS) {
+		if (closed || clearInProgress != null || hardwareId.isBlank() || hardwareId.length > CalibrationStore.MAX_HARDWARE_ID_CHARS) {
 			return CompletableFuture.completedFuture(false)
 		}
 		getOrLoad(hardwareId).ready
@@ -111,6 +112,7 @@ class CalibrationLearner(
 	fun clearLearned(): CompletableFuture<Boolean> {
 		return synchronized(lock) {
 			if (closed) return CompletableFuture.completedFuture(false)
+			clearInProgress?.let { return it }
 			entries.values.forEach { entry ->
 				entry.loadPending = false
 				entry.loaded = true
@@ -121,7 +123,17 @@ class CalibrationLearner(
 				resetTemporal(entry)
 				entry.ready.complete(true)
 			}
-			store.clearAllKnownProfiles()
+			val clearing = store.clearAllKnownProfiles()
+			clearInProgress = clearing
+			clearing.whenComplete { _, _ ->
+				synchronized(lock) {
+					if (clearInProgress === clearing) {
+						entries.clear()
+						clearInProgress = null
+					}
+				}
+			}
+			clearing
 		}
 	}
 

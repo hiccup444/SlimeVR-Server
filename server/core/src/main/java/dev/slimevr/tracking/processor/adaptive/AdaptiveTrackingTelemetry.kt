@@ -8,13 +8,16 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 	private val sensors = SensorStateManager()
 	private val confidence = TrackerConfidenceEstimator()
 	private val health = TrackerHealthEstimator()
-	private var recorder: AdaptiveTelemetryRecorder? = null
+
+	@Volatile private var recorder: AdaptiveTelemetryRecorder? = null
+
+	@Volatile private var recentRecorder: AdaptiveTelemetryRecorder? = null
 	private var previousSampleNanos: Long? = null
 
 	@Volatile var latestFrame: AdaptiveTelemetryFrame? = null
 		private set
 
-	fun update(trackers: List<Tracker>, outputs: List<Tracker>, nowNanos: Long = System.nanoTime(), footContacts: Map<String, FootContactSnapshot> = emptyMap(), driftDiagnostics: List<TrackerDriftDiagnostic> = emptyList(), poseSolver: AdaptivePoseSolver? = null, armCalibration: ArmCalibrationDiagnostic? = null, floorEstimate: AdaptiveFloorEstimate? = null) {
+	fun update(trackers: List<Tracker>, outputs: List<Tracker>, nowNanos: Long = System.nanoTime(), footContacts: Map<String, FootContactSnapshot> = emptyMap(), driftDiagnostics: List<TrackerDriftDiagnostic> = emptyList(), poseSolver: AdaptivePoseSolver? = null, armCalibration: ArmCalibrationDiagnostic? = null, floorEstimate: AdaptiveFloorEstimate? = null, qualityFrame: AdaptiveTelemetryFrame? = null) {
 		if (!config.telemetryEnabled && !config.liveDiagnosticsEnabled) {
 			close()
 			return
@@ -23,7 +26,9 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 		val previous = previousSampleNanos
 		if (previous != null && nowNanos >= previous && nowNanos - previous < interval) return
 		previousSampleNanos = nowNanos
-		if (config.telemetryEnabled && recorder == null) recorder = AdaptiveTelemetryRecorder(config.telemetryDirectory)
+		if (config.telemetryEnabled && recorder == null) {
+			recorder = AdaptiveTelemetryRecorder(config.telemetryDirectory).also { recentRecorder = it }
+		}
 		if (!config.telemetryEnabled) {
 			recorder?.close()
 			recorder = null
@@ -41,15 +46,49 @@ class AdaptiveTrackingTelemetry(private val config: AdaptiveTrackingConfig) : Au
 			trackerPredictions = poseSolver?.trackerPredictions ?: emptyMap(),
 			activity = poseSolver?.activity,
 		)
+		val live = qualityFrame?.takeIf { it.timestampNanos == nowNanos }?.samples?.associateBy { it.id }
+		val aligned = if (live != null) {
+			captured.copy(
+				samples = captured.samples.map { sample ->
+					live[sample.id]?.let { input -> sample.copy(rawRotation = input.rawRotation, adjustedRotation = input.adjustedRotation) } ?: sample
+				},
+			)
+		} else {
+			captured
+		}
 		val frame = if (config.confidenceDiagnosticsEnabled) {
-			health.observe(confidence.observe(captured))
+			if (live != null) {
+				aligned.copy(
+					samples = aligned.samples.map { sample ->
+						live[sample.id]?.let { input -> sample.copy(confidence = input.confidence, health = input.health) } ?: sample
+					},
+				)
+			} else {
+				health.observe(confidence.observe(aligned))
+			}
 		} else {
 			confidence.reset()
 			health.reset()
-			captured
+			aligned
 		}
 		latestFrame = frame
 		recorder?.offer(frame)
+	}
+
+	fun recordingStatus(): Map<String, Any?> {
+		val writer = recentRecorder
+		return mapOf(
+			"requested" to config.telemetryEnabled,
+			"active" to (config.telemetryEnabled && recorder === writer && writer?.isRecording == true),
+			"finalizing" to (writer?.isFinalizing == true),
+			"directory" to config.telemetryDirectory,
+			"sampleRateHz" to config.telemetrySampleRateHz.coerceIn(1, 100),
+			"files" to (writer?.outputPaths?.map { it.toAbsolutePath().toString() } ?: emptyList()),
+			"writtenFrames" to (writer?.writtenFrames ?: 0L),
+			"droppedFrames" to (writer?.droppedFrames ?: 0L),
+			"sizeLimitReached" to (writer?.sizeLimitReached ?: false),
+			"failure" to writer?.failure,
+		)
 	}
 
 	fun reset() {

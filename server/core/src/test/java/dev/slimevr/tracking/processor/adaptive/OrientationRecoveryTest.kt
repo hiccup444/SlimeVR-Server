@@ -13,11 +13,13 @@ class OrientationRecoveryTest {
 		val measured = Quaternion.rotationAroundYAxis(0.01f)
 		model.update(measured, true, 20_000_000)
 		val early = model.update(measured, false, 40_000_000)
+		assertTrue(model.usingPrediction)
 		assertTrue(early.angleToR(Quaternion.IDENTITY) > measured.angleToR(Quaternion.IDENTITY))
 		val bounded = model.update(measured, false, 220_000_000)
 		assertEquals(bounded, model.update(measured, false, 420_000_000))
 		val target = Quaternion.rotationAroundYAxis(0.3f)
 		val recovered = model.update(target, true, 440_000_000)
+		assertEquals(false, model.usingPrediction)
 		assertTrue(recovered.angleToR(target) > 0.02f)
 		assertTrue(recovered.angleToR(target) < bounded.angleToR(target))
 	}
@@ -31,5 +33,6 @@ class OrientationRecoveryTest {
 		assertEquals(rotation, model.update(rotation, true, 2_000_000_000))
 		model.reset()
 		assertEquals(Quaternion.IDENTITY, model.update(Quaternion.IDENTITY, false, 2_020_000_000))
+		assertEquals(false, model.usingPrediction)
 	}
 }

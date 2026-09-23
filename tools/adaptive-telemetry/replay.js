@@ -72,7 +72,7 @@ function evaluate(recording) {
     for (const sample of trackerSamples(frame)) {
       const group = frame.samples.includes(sample) ? "input" : "output";
       const id = `${group}:${String(sample.id)}`;
-      if (!trackerStats.has(id)) trackerStats.set(id, { id, name: String(sample.name ?? sample.id), group, footSlideMeters: 0, plantedSeconds: 0, plantedIntervals: 0, validAngularSamples: 0, linearAccelerations: [], angularSpeedSecondDerivatives: [], previousAngularAcceleration: null });
+      if (!trackerStats.has(id)) trackerStats.set(id, { id, name: String(sample.name ?? sample.id), role: sample.role ?? null, group, footSlideMeters: 0, plantedSeconds: 0, plantedIntervals: 0, validAngularSamples: 0, linearAccelerations: [], angularSpeedSecondDerivatives: [], previousAngularAcceleration: null });
       const stats = trackerStats.get(id);
       const valid = sample.status === "OK" && sample.continuousObservation === true;
       const p = vec(sample.position);
@@ -98,14 +98,26 @@ function evaluate(recording) {
     for (const diagnostic of Array.isArray(frame.driftDiagnostics) ? frame.driftDiagnostics : []) {
       if (!diagnostic || diagnostic.trackerId == null) continue;
       const id = String(diagnostic.trackerId);
-      if (!driftStats.has(id)) driftStats.set(id, { trackerId: id, count: 0, eligibleFrames: 0, reasons: new Map(), errors: [], filteredErrors: [], consistentSeconds: [] });
+      if (!driftStats.has(id)) driftStats.set(id, { trackerId: id, count: 0, eligibleFrames: 0, holdoverFrames: 0, reasons: new Map(), errors: [], filteredErrors: [], consistentSeconds: [], totalAbsoluteBiasChangeRadians: 0, correctionObservedSeconds: 0, maxCorrectionRateRadiansPerSecond: null, priorBias: null });
       const stat = driftStats.get(id);
       stat.count++;
       if (diagnostic.residual?.eligibleForLearning === true) stat.eligibleFrames++;
+      if (diagnostic.holdoverActive === true) stat.holdoverFrames++;
       if (typeof diagnostic.residual?.reason === "string") stat.reasons.set(diagnostic.residual.reason, (stat.reasons.get(diagnostic.residual.reason) || 0) + 1);
       if (finite(diagnostic.residual?.consistentSeconds)) stat.consistentSeconds.push(diagnostic.residual.consistentSeconds);
       if (finite(diagnostic.residual?.errorRadians)) stat.errors.push(diagnostic.residual.errorRadians);
       if (finite(diagnostic.residual?.filteredErrorRadians)) stat.filteredErrors.push(diagnostic.residual.filteredErrorRadians);
+      if (finite(diagnostic.biasRadians)) {
+        const prior = stat.priorBias;
+        const dt = prior === null ? null : time - prior.time;
+        if (prior !== null && prior.epoch === epoch && prior.dropped === dropped && dt > 0 && dt <= 0.5) {
+          const change = Math.abs(diagnostic.biasRadians - prior.bias);
+          stat.totalAbsoluteBiasChangeRadians += change;
+          stat.correctionObservedSeconds += dt;
+          stat.maxCorrectionRateRadiansPerSecond = Math.max(stat.maxCorrectionRateRadiansPerSecond ?? 0, change / dt);
+        }
+        stat.priorBias = { bias: diagnostic.biasRadians, time, epoch, dropped };
+      } else stat.priorBias = null;
     }
     if (frameInterval) {
       for (const [id, sample] of current) if (sample.valid && sample.sample.status === "OK") {
@@ -140,8 +152,8 @@ function evaluate(recording) {
     angularSpeedSecondDerivatives: undefined,
     previousAngularAcceleration: undefined,
   }));
-  const driftDiagnostics = [...driftStats.values()].map((stat) => ({ trackerId: stat.trackerId, diagnosticFrames: stat.count, eligibleFrames: stat.eligibleFrames, meanErrorRadians: mean(stat.errors), meanFilteredErrorRadians: mean(stat.filteredErrors), meanConsistentSeconds: mean(stat.consistentSeconds), reasons: Object.fromEntries(stat.reasons) }));
-  return { evaluationScope: "recorded-output telemetry; this is not a full solver rerun or raw-packet replay", metricNotes: ["Foot slide is horizontal computed-position distance per second only across adjacent valid PLANTED samples with the same plant position.", "Linear acceleration is derived from changes in recorded derivedLinearVelocity.", "Angular-speed second derivative is based on scalar angular-speed telemetry; it is not a 3D angular jerk vector."], frameCount: recording.frames.length, usableSeconds, comparedIntervals, resetCount, droppedFrameTransitions: recording.frames.reduce((n, f, i, all) => n + (i > 0 && (f.droppedFrames || 0) > (all[i-1].droppedFrames || 0) ? 1 : 0), 0), trackers, driftDiagnostics, transitions };
+  const driftDiagnostics = [...driftStats.values()].map((stat) => ({ trackerId: stat.trackerId, diagnosticFrames: stat.count, eligibleFrames: stat.eligibleFrames, holdoverFrames: stat.holdoverFrames, totalAbsoluteBiasChangeRadians: stat.totalAbsoluteBiasChangeRadians, correctionObservedSeconds: stat.correctionObservedSeconds, meanAbsoluteCorrectionRateRadiansPerSecond: stat.correctionObservedSeconds ? stat.totalAbsoluteBiasChangeRadians / stat.correctionObservedSeconds : null, maxCorrectionRateRadiansPerSecond: stat.maxCorrectionRateRadiansPerSecond, meanErrorRadians: mean(stat.errors), meanFilteredErrorRadians: mean(stat.filteredErrors), meanConsistentSeconds: mean(stat.consistentSeconds), reasons: Object.fromEntries(stat.reasons) }));
+  return { evaluationScope: "recorded-output telemetry; this is not a full solver rerun or raw-packet replay", metricNotes: ["Foot slide is horizontal computed-position distance per second only across adjacent valid PLANTED samples with the same plant position.", "Linear acceleration is derived from changes in recorded derivedLinearVelocity.", "Angular-speed second derivative is based on scalar angular-speed telemetry; it is not a 3D angular jerk vector.", "Yaw correction movement excludes reset epochs, dropped-frame changes, non-forward timestamps, and gaps over 0.5 seconds. It measures applied bias changes, not physical drift accuracy."], frameCount: recording.frames.length, usableSeconds, comparedIntervals, resetCount, droppedFrameTransitions: recording.frames.reduce((n, f, i, all) => n + (i > 0 && (f.droppedFrames || 0) > (all[i-1].droppedFrames || 0) ? 1 : 0), 0), trackers, driftDiagnostics, transitions };
 }
 function mean(values) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; }
 function max(values) { let result = null; for (const value of values) if (result === null || value > result) result = value; return result; }
@@ -176,11 +188,17 @@ function writeFixtures(directory) {
 if (require.main === module) {
   try {
     if (process.argv[2] === "--generate-fixtures") { writeFixtures(process.argv[3] || path.join(__dirname, "fixtures")); process.stdout.write("Wrote four deterministic telemetry fixtures.\n"); }
-    else if (!process.argv[2]) { process.stderr.write("Usage: node replay.js <recording.jsonl> | --generate-fixtures [directory]\n"); process.exitCode = 2; }
+    else if (!process.argv[2]) { process.stderr.write("Usage: node replay.js <recording.jsonl> [more-parts.jsonl ...] | --generate-fixtures [directory]\n"); process.exitCode = 2; }
     else {
-      const file = process.argv[2]; const stat = fs.statSync(file); if (stat.size > MAX_BYTES) throw new Error(`Input exceeds the ${MAX_BYTES} byte limit`);
-      const recording = parseRecording(fs.readFileSync(file, "utf8"));
-      process.stdout.write(`${JSON.stringify({ ...evaluate(recording), parseErrors: recording.errors }, null, 2)}\n`);
+      const parts = process.argv.slice(2).map(file => {
+        const stat = fs.statSync(file); if (stat.size > MAX_BYTES) throw new Error(`${file} exceeds the ${MAX_BYTES} byte limit`);
+        const recording = parseRecording(fs.readFileSync(file, "utf8"));
+        return { file, recording };
+      }).sort((a, b) => a.recording.frames[0].frame.timestampNanos - b.recording.frames[0].frame.timestampNanos);
+      const frames = parts.flatMap(part => part.recording.frames);
+      if (frames.length > MAX_FRAMES) throw new Error(`Combined recording exceeds ${MAX_FRAMES} frames`);
+      const parseErrors = parts.flatMap(part => part.recording.errors.map(error => `${part.file}: ${error}`));
+      process.stdout.write(`${JSON.stringify({ ...evaluate({ frames }), sourceFiles: parts.map(part => part.file), parseErrors }, null, 2)}\n`);
     }
   } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
 }

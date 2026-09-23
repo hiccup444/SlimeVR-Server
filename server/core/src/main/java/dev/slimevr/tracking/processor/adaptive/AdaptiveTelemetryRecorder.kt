@@ -7,6 +7,7 @@ import io.github.axisangles.ktmath.Vector3
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 class AdaptiveTelemetryRecorder(
 	private val directory: String,
 	private val maxBytes: Long = 64L * 1024 * 1024,
+	private val maxParts: Int = 32,
 ) : AutoCloseable {
 	private val queue = ArrayBlockingQueue<AdaptiveTelemetryFrame>(128)
 	private val dropped = AtomicLong()
@@ -26,6 +28,18 @@ class AdaptiveTelemetryRecorder(
 
 	@Volatile var outputPath: Path? = null
 		private set
+
+	@Volatile var outputPaths: List<Path> = emptyList()
+		private set
+
+	@Volatile var writtenFrames = 0L
+		private set
+
+	@Volatile var sizeLimitReached = false
+		private set
+	val droppedFrames: Long get() = dropped.get()
+	val isRecording: Boolean get() = running && failure == null && !sizeLimitReached
+	val isFinalizing: Boolean get() = !running && worker.isAlive
 	private val worker = Thread({ writeFrames() }, "AdaptiveTelemetryWriter").apply {
 		isDaemon = true
 		start()
@@ -37,26 +51,48 @@ class AdaptiveTelemetryRecorder(
 
 	private fun writeFrames() {
 		try {
+			require(maxBytes > 0 && maxParts in 1..64)
 			val folder = Paths.get(directory)
 			Files.createDirectories(folder)
-			val path = Files.createTempFile(folder, "session-", ".jsonl")
+			var path = Files.createTempFile(folder, "session-", ".jsonl")
+			val stem = path.fileName.toString().removeSuffix(".jsonl")
 			outputPath = path
+			outputPaths = listOf(path)
 			val mapper = ObjectMapper()
-			var bytes = 0L
-			Files.newBufferedWriter(path).use { writer ->
-				writer.write("{\"type\":\"header\",\"schemaVersion\":1,\"mode\":\"diagnostics\"}\n")
+			val header = "{\"type\":\"header\",\"schemaVersion\":1,\"mode\":\"diagnostics\"}\n"
+			val headerBytes = header.toByteArray(Charsets.UTF_8).size.toLong()
+			var bytes = headerBytes
+			var part = 1
+			var writer = Files.newBufferedWriter(path)
+			try {
+				writer.write(header)
 				while (running || queue.isNotEmpty()) {
 					val frame = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
 					val line = mapper.writeValueAsString(mapOf("type" to "frame", "droppedFrames" to dropped.get(), "frame" to frame.toRecord()))
-					bytes += line.toByteArray(Charsets.UTF_8).size + 1
-					if (bytes > maxBytes) {
-						LogManager.info("[AdaptiveTracking] Recording size limit reached: $path")
-						break
+					val lineBytes = line.toByteArray(Charsets.UTF_8).size + 1L
+					if (bytes + lineBytes > maxBytes) {
+						if (bytes == headerBytes || part >= maxParts) {
+							sizeLimitReached = true
+							LogManager.info("[AdaptiveTracking] Recording size limit reached: $path")
+							break
+						}
+						writer.close()
+						part++
+						path = folder.resolve("$stem-part$part.jsonl")
+						writer = Files.newBufferedWriter(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+						outputPath = path
+						outputPaths = outputPaths + listOf(path)
+						writer.write(header)
+						bytes = headerBytes
 					}
 					writer.write(line)
 					writer.newLine()
+					bytes += lineBytes
+					writtenFrames++
 					if (queue.isEmpty()) writer.flush()
 				}
+			} finally {
+				writer.close()
 			}
 		} catch (error: Exception) {
 			failure = error.message ?: error.javaClass.simpleName
@@ -144,7 +180,7 @@ private fun TelemetrySample.toRecord(): Map<String, Any?> = mapOf(
 )
 
 internal fun PoseSolverInput.toRecord() = mapOf(
-	"segments" to segments.map { s -> mapOf("parent" to s.parent, "length" to s.length, "rootPosition" to s.rootPosition.toRecord(), "measured" to s.measured.toRecord(), "confidence" to s.confidence, "fixed" to s.fixed, "previous" to s.previous?.toRecord(), "temporalWeight" to s.temporalWeight, "rotationSource" to s.rotationSource, "sourceOffset" to s.sourceOffset.toRecord()) },
+	"segments" to segments.map { s -> mapOf("parent" to s.parent, "length" to s.length, "rootPosition" to s.rootPosition.toRecord(), "measured" to s.measured.toRecord(), "confidence" to s.confidence, "fixed" to s.fixed, "previous" to s.previous?.toRecord(), "temporalWeight" to s.temporalWeight, "rotationSource" to s.rotationSource, "sourceOffset" to s.sourceOffset.toRecord(), "initialRotation" to s.initialRotation?.toRecord()) },
 	"anchors" to anchors.map { a -> mapOf("segment" to a.segment, "target" to a.target.toRecord(), "weight" to a.weight, "otherSegment" to a.otherSegment) },
 	"joints" to joints.map { j -> mapOf("first" to j.first, "second" to j.second, "weight" to j.weight, "hinge" to j.hinge, "firstOffset" to j.firstOffset.toRecord(), "secondOffset" to j.secondOffset.toRecord(), "maxSwingRadians" to j.maxSwingRadians, "maxTwistRadians" to j.maxTwistRadians) },
 )

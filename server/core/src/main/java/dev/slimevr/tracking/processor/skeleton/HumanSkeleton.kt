@@ -373,6 +373,7 @@ class HumanSkeleton(
 	fun setTrackersFromList(trackers: List<Tracker>) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		legTweaks.resetAdaptiveContacts()
 		// Head
@@ -546,7 +547,6 @@ class HumanSkeleton(
 	fun updatePose(nowNanos: Long = System.nanoTime()) {
 		tapDetectionManager?.update()
 		userHeightCalibration?.tick()
-		humanPoseManager.adaptiveEstimator.update(this, nowNanos)
 
 		StayAligned.adjustNextTracker(trackerSkeleton, stayAlignedConfig)
 
@@ -557,6 +557,22 @@ class HumanSkeleton(
 			// https://github.com/SlimeVR/SlimeVR-Server/issues/1297 is solved
 			headBone.updateWithConstraints(false)
 		}
+		// All adaptive consumers use the same current-frame input-health result.
+		// Accepted bias changes affect the following pose tick, as arm calibration already does.
+		val adaptiveConfig = humanPoseManager.adaptiveTrackingConfig
+		if (adaptiveConfig.poseOptimizerEnabled ||
+			adaptiveConfig.yawCorrectionEnabled ||
+			adaptiveConfig.footAnchoringEnabled ||
+			adaptiveConfig.floorEstimationEnabled ||
+			adaptiveConfig.armCalibrationMode != "disabled" ||
+			adaptiveConfig.telemetryEnabled ||
+			adaptiveConfig.liveDiagnosticsEnabled
+		) {
+			humanPoseManager.adaptiveMeasurementQuality.observe(this, nowNanos)
+		} else if (humanPoseManager.adaptiveMeasurementQuality.latestFrame != null) {
+			humanPoseManager.adaptiveMeasurementQuality.reset()
+		}
+		humanPoseManager.adaptiveEstimator.update(this, nowNanos)
 		humanPoseManager.adaptiveArmCalibration.update(this, nowNanos)
 		humanPoseManager.adaptiveEstimator.updateAbsoluteConstraints(this, nowNanos)
 		humanPoseManager.adaptivePoseSolver.update(this, nowNanos)
@@ -1565,6 +1581,7 @@ class HumanSkeleton(
 	fun resetTrackersFull(resetSourceName: String?, bodyParts: List<Int> = ArrayList()) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		humanPoseManager.adaptiveTelemetry.reset()
 		humanPoseManager.server?.serverGuards?.onFullReset()
@@ -1602,6 +1619,7 @@ class HumanSkeleton(
 	fun resetTrackersYaw(resetSourceName: String?, bodyParts: List<Int> = TrackerUtils.allBodyPartsButFingers) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		humanPoseManager.adaptiveTelemetry.reset()
 		// Resets the yaw of the trackers with the head as reference.
@@ -1634,6 +1652,7 @@ class HumanSkeleton(
 	fun resetTrackersMounting(resetSourceName: String?, bodyParts: List<Int>) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		humanPoseManager.adaptiveTelemetry.reset()
 		val trackersToReset = trackersToReset
@@ -1696,6 +1715,7 @@ class HumanSkeleton(
 	fun clearTrackersMounting(resetSourceName: String?) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		humanPoseManager.adaptiveTelemetry.reset()
 		headTracker?.let {
@@ -1807,6 +1827,7 @@ class HumanSkeleton(
 	fun setPauseTracking(pauseTracking: Boolean, sourceName: String?) {
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
+		humanPoseManager.adaptiveMeasurementQuality.reset()
 		humanPoseManager.adaptiveArmCalibration.reset()
 		legTweaks.resetAdaptiveContacts()
 		if (!pauseTracking && this.pauseTracking) {

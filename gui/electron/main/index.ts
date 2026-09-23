@@ -15,7 +15,7 @@ import path, { dirname, join } from 'path';
 import open from 'open';
 import trayIcon from '../resources/icons/icon.png?asset';
 import appleTrayIcon from '../resources/icons/Square30x30Logo.png?asset';
-import { readFile, stat } from 'fs/promises';
+import { readFile, realpath, stat } from 'fs/promises';
 import { pathToFileURL } from 'node:url';
 import { getPlatform, handleIpc, isPortAvailable } from './utils';
 import {
@@ -178,6 +178,29 @@ handleIpc(IPC_CHANNELS.OPEN_FILE, (e, folder) => {
     shell.openPath(requestedPath);
   } else {
     logger.error({ path: requestedPath }, 'Blocked unauthorized path');
+  }
+});
+
+handleIpc(IPC_CHANNELS.OPEN_ADAPTIVE_RECORDING, async (_e, file) => {
+  if (typeof file !== 'string') return false;
+  const serverJar = findServerJar();
+  if (!serverJar) return false;
+  const root = path.resolve(dirname(serverJar), 'adaptive-telemetry');
+  const requested = path.resolve(file);
+  if (!/^session-[a-zA-Z0-9-]+(?:-part\d+)?\.jsonl$/.test(path.basename(requested)))
+    return false;
+  try {
+    const relative = path.relative(await realpath(root), await realpath(requested));
+    if (
+      relative.startsWith('..') ||
+      path.isAbsolute(relative) ||
+      !(await stat(requested)).isFile()
+    )
+      return false;
+    shell.showItemInFolder(requested);
+    return true;
+  } catch {
+    return false;
   }
 });
 

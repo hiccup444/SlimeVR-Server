@@ -21,6 +21,7 @@ object AdaptivePoseReplay {
 			PoseSegment(
 				integer(s, "parent"), number(s, "length"), vector(s.path("rootPosition")), rotation(s.path("measured")), number(s, "confidence"), s.path("fixed").booleanValue(),
 				s.get("previous")?.takeUnless { it.isNull }?.let(::rotation), number(s, "temporalWeight"), integer(s, "rotationSource"), rotation(s.path("sourceOffset")),
+				if (s.has("initialRotation")) s.get("initialRotation")?.takeUnless { it.isNull }?.let(::rotation) else s.get("previous")?.takeUnless { it.isNull }?.let(::rotation),
 			)
 		}
 		val anchors = array("anchors").map { a -> PoseAnchor(integer(a, "segment"), vector(a.path("target")), number(a, "weight"), integer(a, "otherSegment")) }

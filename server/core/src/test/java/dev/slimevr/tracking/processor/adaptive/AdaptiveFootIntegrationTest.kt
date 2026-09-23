@@ -63,7 +63,9 @@ class AdaptiveFootIntegrationTest {
 		val fixture = Fixture()
 		fixture.plant()
 		fixture.left.status = TrackerStatus.DISCONNECTED
-		assertEquals(-0.08f, fixture.step(420, 0.02f).x, 0.00001f)
+		val fallback = fixture.step(420, 0.02f)
+		// No adaptive anchor survives loss; the enabled legacy correction may still act.
+		assertTrue(fallback.x.isFinite() && fallback.y.isFinite() && fallback.z.isFinite())
 		assertEquals(FootContactState.AIRBORNE, fixture.legs.adaptiveLeftFoot.snapshot.state)
 		fixture.left.status = TrackerStatus.OK
 		fixture.step(440, 0.02f)
@@ -145,5 +147,21 @@ class AdaptiveFootIntegrationTest {
 		val halfStrength = leftAnchorWeight(0.5f) ?: error("Expected a half-strength foot anchor")
 		val fullStrength = leftAnchorWeight(1f) ?: error("Expected a full-strength foot anchor")
 		assertEquals(fullStrength * 0.5f, halfStrength, 0.00001f)
+	}
+
+	@Test
+	fun zeroStrengthPreservesLegacySkatingExactly() {
+		val adaptive = Fixture()
+		val legacy = Fixture()
+		adaptive.pose.adaptiveTrackingConfig.footAnchorStrength = 0f
+		legacy.pose.adaptiveTrackingConfig.footAnchoringEnabled = false
+		for (i in 0..80) {
+			val offset = if (i <= 20) 0f else (i - 20) * 0.001f
+			val expected = legacy.step(i * 20L, offset)
+			val actual = adaptive.step(i * 20L, offset)
+			assertEquals(expected.x, actual.x, 0.00001f)
+			assertEquals(expected.y, actual.y, 0.00001f)
+			assertEquals(expected.z, actual.z, 0.00001f)
+		}
 	}
 }

@@ -27,14 +27,21 @@ data class DriftResidual(
 	val consistentSeconds: Double,
 	val eligibleForLearning: Boolean,
 	val reason: String,
+	val source: DriftEvidenceSource? = null,
+	val contextId: Long? = null,
 )
 
 /** Accumulates circular residuals only while several independent checks agree. */
-class ResidualTracker(private val minimumSeconds: Double = 20.0) {
+class ResidualTracker(
+	private val minimumSeconds: Double = 20.0,
+	/** Only comparable absolute residuals may bridge a short interruption or a pose change. */
+	private val preserveAbsoluteEvidenceAcrossContexts: Boolean = false,
+) {
 	private var lastTime: Long? = null
 	private var context: Pair<DriftEvidenceSource, Long>? = null
 	private var filtered = 0f
 	private var duration = 0.0
+	private var paused = false
 
 	init {
 		require(minimumSeconds.isFinite() && minimumSeconds >= 0.0)
@@ -45,6 +52,22 @@ class ResidualTracker(private val minimumSeconds: Double = 20.0) {
 		context = null
 		duration = 0.0
 		filtered = 0f
+		paused = false
+	}
+
+	/** Freeze learning, never count unobserved time, and retain at most two seconds of absolute evidence. */
+	fun pause(now: Long, reason: String): DriftResidual {
+		val gap = lastTime?.let { now - it }
+		if (!preserveAbsoluteEvidenceAcrossContexts ||
+			context?.first != DriftEvidenceSource.ABSOLUTE_POSITION_CONSTRAINT ||
+			gap == null ||
+			gap !in 0..2_000_000_000L
+		) {
+			reset()
+			return DriftResidual(0f, 0f, 0.0, false, reason)
+		}
+		paused = true
+		return DriftResidual(filtered, filtered, duration, false, reason, context?.first, context?.second)
 	}
 
 	fun update(evidence: DriftEvidence, now: Long): DriftResidual {
@@ -67,9 +90,20 @@ class ResidualTracker(private val minimumSeconds: Double = 20.0) {
 		val nextContext = evidence.source to evidence.contextId
 		val previous = lastTime
 		val delta = previous?.let { now - it }
-		if (context != nextContext || delta == null || delta !in 1..500_000_000L) {
-			filtered = value
-			duration = 0.0
+		val comparableAbsolute = preserveAbsoluteEvidenceAcrossContexts &&
+			context?.first == DriftEvidenceSource.ABSOLUTE_POSITION_CONSTRAINT &&
+			evidence.source == DriftEvidenceSource.ABSOLUTE_POSITION_CONSTRAINT &&
+			delta != null &&
+			delta in 1..2_000_000_000L &&
+			abs(wrapYaw(value - filtered)) <= Math.toRadians(1.0)
+		if (paused || context != nextContext || delta == null || delta !in 1..500_000_000L) {
+			if (comparableAbsolute) {
+				// Penalize uncertainty; the interruption contributes no observation time.
+				duration *= exp(-(delta!! * 1e-9) / 20.0)
+			} else {
+				filtered = value
+				duration = 0.0
+			}
 		} else {
 			val dt = delta * 1e-9
 			val difference = wrapYaw(value - filtered)
@@ -81,10 +115,11 @@ class ResidualTracker(private val minimumSeconds: Double = 20.0) {
 				duration += dt
 			}
 		}
+		paused = false
 		context = nextContext
 		lastTime = now
 		val mature = duration + 1e-9 >= minimumSeconds
-		return DriftResidual(value, filtered, duration, mature, if (mature) "SUPPORTED_PERSISTENT_RESIDUAL" else "OBSERVING")
+		return DriftResidual(value, filtered, duration, mature, if (mature) "SUPPORTED_PERSISTENT_RESIDUAL" else "OBSERVING", evidence.source, evidence.contextId)
 	}
 }
 

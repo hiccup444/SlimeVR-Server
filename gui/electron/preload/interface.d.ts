@@ -56,6 +56,7 @@ export interface IElectronAPI {
   saveDialog: (options: SaveDialogOptions) => Promise<SaveDialogReturnValue>;
   log: (type: 'info' | 'error' | 'warn', ...args: unknown[]) => void;
   openFile: (path: string) => void;
+  openAdaptiveRecording: (path: string) => Promise<boolean>;
   ghGet: <T extends GHGet>(options: T) => Promise<GHReturn[T['type']]>;
   setPresence: (options: DiscordPresence) => void;
   getInstallDir: () => Promise<string>;

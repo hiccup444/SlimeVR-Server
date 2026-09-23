@@ -15,10 +15,13 @@ internal object CalibrationPoseConfidence {
 		motionUncertainty: Float,
 		now: Long,
 		contact: Float? = null,
+		qualityFrame: AdaptiveTelemetryFrame,
 	): GlobalPoseConfidence {
-		val scores = trackers.mapNotNull { t -> t.trackerPosition?.trackerRole?.let { it to quality(t, now) } }
+		val live = if (qualityFrame.timestampNanos == now) qualityFrame.samples.associateBy { it.id } else emptyMap()
+		fun liveQuality(t: Tracker) = min(quality(t, now), live[t.id]?.confidence?.score ?: 0f)
+		val scores = trackers.mapNotNull { t -> t.trackerPosition?.trackerRole?.let { it to liveQuality(t) } }
 			.groupBy({ it.first }, { it.second }).mapValues { it.value.min() }
-		val anchorQuality = anchors.minOfOrNull { quality(it, now) } ?: 0f
+		val anchorQuality = anchors.minOfOrNull { liveQuality(it) } ?: 0f
 		return estimator.estimate(
 			GlobalPoseConfidenceInput(
 				trackerConfidences = scores,

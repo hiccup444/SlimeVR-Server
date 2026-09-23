@@ -83,7 +83,13 @@ class CalibrationProfile(
 		if (exact != null) return exact.meanRate
 		val lower = ready.lastOrNull { it.temperatureCelsius < temperatureCelsius }
 		val upper = ready.firstOrNull { it.temperatureCelsius > temperatureCelsius }
-		if (lower == null || upper == null) return null
+		if (lower == null) return upper?.takeIf { it.temperatureCelsius - temperatureCelsius <= bucketWidthCelsius / 2.0 }?.meanRate
+		if (upper == null) return lower.takeIf { temperatureCelsius - it.temperatureCelsius <= bucketWidthCelsius / 2.0 }?.meanRate
+		if (upper.temperatureCelsius - lower.temperatureCelsius > bucketWidthCelsius * 2.0) {
+			if (temperatureCelsius - lower.temperatureCelsius <= bucketWidthCelsius / 2.0) return lower.meanRate
+			if (upper.temperatureCelsius - temperatureCelsius <= bucketWidthCelsius / 2.0) return upper.meanRate
+			return null
+		}
 		val fraction = (temperatureCelsius - lower.temperatureCelsius) / (upper.temperatureCelsius - lower.temperatureCelsius)
 		return (lower.meanRate + (upper.meanRate - lower.meanRate) * fraction).coerceIn(-MAX_ABSOLUTE_RATE, MAX_ABSOLUTE_RATE)
 	}

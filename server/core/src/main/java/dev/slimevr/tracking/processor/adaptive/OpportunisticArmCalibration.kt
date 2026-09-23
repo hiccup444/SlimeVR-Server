@@ -71,6 +71,7 @@ class OpportunisticArmCalibration(private val pose: HumanPoseManager, private va
 			if (mode != "disabled") reset()
 			return
 		}
+		val qualityFrame = pose.adaptiveMeasurementQuality.observe(s, now)
 		val currentUpper = pose.getOffset(SkeletonConfigOffsets.UPPER_ARM)
 		val currentLower = pose.getOffset(SkeletonConfigOffsets.LOWER_ARM)
 		if (requested != mode || currentUpper != upper || currentLower != lower) {
@@ -137,6 +138,7 @@ class OpportunisticArmCalibration(private val pose: HumanPoseManager, private va
 					witnessChanges,
 					if (trusted) 0f else 1f,
 					now,
+					qualityFrame = qualityFrame,
 				)
 				trusted = trusted && state.poseConfidence?.learningEligible == true
 			} else {

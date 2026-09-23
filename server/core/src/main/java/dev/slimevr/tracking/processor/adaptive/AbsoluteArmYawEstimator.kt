@@ -12,7 +12,7 @@ import kotlin.math.abs
 class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 	private data class Observation(val positions: List<Vector3>, val witnesses: List<Quaternion>, val localUp: Vector3)
 	private class State(val tracker: Tracker) {
-		val residual = ResidualTracker()
+		val residual = ResidualTracker(preserveAbsoluteEvidenceAcrossContexts = true)
 		val corrector = AdaptiveYawCorrector()
 		var reference: Observation? = null
 		var previous: Quaternion? = null
@@ -34,6 +34,7 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 			reset()
 			return
 		}
+		val qualityFrame = s.humanPoseManager.adaptiveMeasurementQuality.observe(s, now)
 		val pose = s.humanPoseManager
 		val upper = pose.getOffset(SkeletonConfigOffsets.UPPER_ARM)
 		val lower = pose.getOffset(SkeletonConfigOffsets.LOWER_ARM)
@@ -54,10 +55,24 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 			state.previous = measured
 			state.previousTime = now
 			fun reject(reason: String) {
+				if (tracker.resetsHandler.isDriftCompensationActive) {
+					state.corrector.reset()
+					tracker.adaptiveYawBiasRadians = 0f
+				}
 				state.reference = null
-				state.residual.reset()
-				observeCalibration(tracker, null, now)
-				results.add(TrackerDriftDiagnostic(tracker.id, state.corrector.biasRadians, DriftResidual(0f, 0f, 0.0, false, reason)))
+				val residual = if (reason == "ARM_MOTION" || reason == "ABSOLUTE_ARM_EVIDENCE_UNAVAILABLE") {
+					state.residual.pause(now, reason)
+				} else {
+					state.residual.reset()
+					DriftResidual(0f, 0f, 0.0, false, reason)
+				}
+				val predictedRate = observeCalibration(tracker, null, now)
+				val canPredict = !tracker.resetsHandler.isDriftCompensationActive &&
+					other?.resetsHandler?.isDriftCompensationActive != true &&
+					reason != "OPPOSITE_ARM_DISAGREEMENT" &&
+					available(tracker, now)
+				tracker.adaptiveYawBiasRadians = state.corrector.predict(if (canPredict) predictedRate else null, now, config.yawCorrectionStrength)
+				results.add(TrackerDriftDiagnostic(tracker.id, tracker.adaptiveYawBiasRadians, residual, predictedRate, holdoverActive = state.corrector.predictionActive))
 			}
 			if (head == null ||
 				chest == null ||
@@ -123,12 +138,17 @@ class AbsoluteArmYawEstimator(private val config: AdaptiveTrackingConfig) {
 				listOf(abs(otherConstraint.residualBiasRadians)),
 				if (stable) 0f else 1f,
 				now,
+				qualityFrame = qualityFrame,
 			)
-			val residual = state.residual.update(DriftEvidence(constraint.residualBiasRadians.toFloat(), DriftEvidenceSource.ABSOLUTE_POSITION_CONSTRAINT, state.context, poseConfidence.score, poseConfidence.score, 0.95f, 3, available = poseConfidence.learningEligible), now)
+			val residual = if (!stable) state.residual.pause(now, "ARM_REFERENCE_CHANGED") else state.residual.update(DriftEvidence(constraint.residualBiasRadians.toFloat(), DriftEvidenceSource.ABSOLUTE_POSITION_CONSTRAINT, state.context, poseConfidence.score, poseConfidence.score, 0.95f, 3, available = poseConfidence.learningEligible), now)
 			val predictedRate = observeCalibration(tracker, residual, now)
 			val correctedResidual = if (predictedRate != null && residual.eligibleForLearning) residual.copy(filteredErrorRadians = wrapYaw(residual.filteredErrorRadians + (predictedRate * 2.0).toFloat())) else residual
-			tracker.adaptiveYawBiasRadians = state.corrector.update(correctedResidual, now, config.yawCorrectionStrength)
-			results.add(TrackerDriftDiagnostic(tracker.id, tracker.adaptiveYawBiasRadians, residual, predictedRate, poseConfidence))
+			tracker.adaptiveYawBiasRadians = if (residual.eligibleForLearning) {
+				state.corrector.update(correctedResidual, now, config.yawCorrectionStrength)
+			} else {
+				state.corrector.predict(predictedRate, now, config.yawCorrectionStrength)
+			}
+			results.add(TrackerDriftDiagnostic(tracker.id, tracker.adaptiveYawBiasRadians, residual, predictedRate, poseConfidence, holdoverActive = state.corrector.predictionActive))
 		}
 		arm(s.leftUpperArmTracker, s.leftHandTracker, s.leftUpperArmBone.getPosition(), s.rightUpperArmTracker, s.rightHandTracker, s.rightUpperArmBone.getPosition())
 		arm(s.rightUpperArmTracker, s.rightHandTracker, s.rightUpperArmBone.getPosition(), s.leftUpperArmTracker, s.leftHandTracker, s.leftUpperArmBone.getPosition())

@@ -8,6 +8,7 @@ import dev.slimevr.autobone.errors.BodyProportionError
 import dev.slimevr.config.AdaptiveTrackingConfig
 import dev.slimevr.config.ConfigManager
 import dev.slimevr.tracking.processor.adaptive.AdaptiveBodyEstimator
+import dev.slimevr.tracking.processor.adaptive.AdaptiveMeasurementQuality
 import dev.slimevr.tracking.processor.adaptive.AdaptivePoseSolver
 import dev.slimevr.tracking.processor.adaptive.AdaptiveTrackingTelemetry
 import dev.slimevr.tracking.processor.adaptive.OpportunisticArmCalibration
@@ -36,12 +37,15 @@ import kotlin.math.*
  */
 class HumanPoseManager(val server: VRServer?) {
 	val adaptiveTrackingConfig = server?.configManager?.vrConfig?.adaptiveTracking ?: AdaptiveTrackingConfig()
+	val adaptiveMeasurementQuality = AdaptiveMeasurementQuality()
 	val adaptiveTelemetry = AdaptiveTrackingTelemetry(adaptiveTrackingConfig)
 	val adaptiveEstimator = AdaptiveBodyEstimator(adaptiveTrackingConfig)
 	val adaptivePoseSolver = AdaptivePoseSolver(adaptiveTrackingConfig)
 	val adaptiveArmCalibration = OpportunisticArmCalibration(this, adaptiveTrackingConfig)
 	private val adaptiveJsonMapper = ObjectMapper()
-	fun adaptiveDiagnosticsJson(): String? = adaptiveTelemetry.latestFrame?.let { adaptiveJsonMapper.writeValueAsString(it.toRecord()) }
+	fun adaptiveDiagnosticsJson(): String? = adaptiveTelemetry.latestFrame?.let {
+		adaptiveJsonMapper.writeValueAsString(it.toRecord() + ("recording" to adaptiveTelemetry.recordingStatus()))
+	}
 	val computedTrackers: MutableList<Tracker> = FastList()
 	private val onSkeletonUpdated: MutableList<Consumer<HumanSkeleton>> = FastList()
 	private val skeletonConfigManager = SkeletonConfigManager(true, this)
@@ -284,7 +288,8 @@ class HumanPoseManager(val server: VRServer?) {
 	 */
 	@VRServerThread
 	fun update() {
-		skeleton.updatePose()
+		val now = System.nanoTime()
+		skeleton.updatePose(now)
 		if (server != null && (adaptiveTrackingConfig.telemetryEnabled || adaptiveTrackingConfig.liveDiagnosticsEnabled)) {
 			if (getPauseTracking()) {
 				adaptiveTelemetry.reset()
@@ -292,6 +297,8 @@ class HumanPoseManager(val server: VRServer?) {
 				adaptiveTelemetry.update(
 					server.allTrackers,
 					computedTrackers,
+					nowNanos = now,
+					qualityFrame = adaptiveMeasurementQuality.latestFrame,
 					driftDiagnostics = adaptiveEstimator.diagnostics,
 					poseSolver = adaptivePoseSolver,
 					armCalibration = adaptiveArmCalibration.diagnostic,

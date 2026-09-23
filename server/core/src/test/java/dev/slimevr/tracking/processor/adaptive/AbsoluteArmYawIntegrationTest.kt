@@ -34,7 +34,8 @@ class AbsoluteArmYawIntegrationTest {
 			val dot = displacement.x * trueDirection.x + displacement.y * trueDirection.y + displacement.z * trueDirection.z
 			kotlin.math.sqrt(d2 + upper * upper - 2.0 * upper * dot).toFloat()
 		}
-		private var time = 0L
+		var time = 0L
+			private set
 		private val leftShoulder: Vector3
 		private val rightShoulder: Vector3
 		private val handOffset: Vector3
@@ -126,9 +127,9 @@ class AbsoluteArmYawIntegrationTest {
 	}
 
 	@Test
-	fun controllerMotionInterruptsEvidenceAndClearsAccumulatedLearning() {
+	fun controllerMotionPausesLearningWithoutChangingTheAcceptedBias() {
 		val f = Fixture()
-		f.stationary(23)
+		f.stationary(25)
 		val learned = f.leftArm.adaptiveYawBiasRadians
 		assertTrue(learned > 0f)
 		repeat(10) { f.step(Vector3(0.02f * (it + 1), 0f, 0f)) }
@@ -151,13 +152,13 @@ class AbsoluteArmYawIntegrationTest {
 	@Test
 	fun disablingCorrectionAndResettingYawClearAdaptiveBias() {
 		val f = Fixture()
-		f.stationary(23)
+		f.stationary(25)
 		assertTrue(f.leftArm.adaptiveYawBiasRadians > 0f)
 		f.pose.adaptiveTrackingConfig.yawCorrectionEnabled = false
 		f.step()
 		assertEquals(0f, f.leftArm.adaptiveYawBiasRadians)
 		f.pose.adaptiveTrackingConfig.yawCorrectionEnabled = true
-		f.stationary(23)
+		f.stationary(25)
 		assertTrue(f.leftArm.adaptiveYawBiasRadians > 0f)
 		f.pose.resetTrackersYaw("test")
 		assertEquals(0f, f.leftArm.adaptiveYawBiasRadians)
@@ -200,5 +201,25 @@ class AbsoluteArmYawIntegrationTest {
 		assertEquals(raw, f.leftArm.getRawRotation())
 		val diagnostic = f.pose.adaptiveEstimator.diagnostics.single { it.trackerId == f.leftArm.id }
 		assertEquals("ABSOLUTE_ARM_EVIDENCE_UNAVAILABLE", diagnostic.residual?.reason)
+	}
+
+	@Test
+	fun learnedRateCarriesArmCorrectionAcrossBriefGeometryChange() {
+		val f = Fixture()
+		f.pose.adaptiveTrackingConfig.yawCorrectionStrength = 1f
+		f.pose.adaptiveTrackingConfig.temperatureLearningEnabled = true
+		val estimator = AbsoluteArmYawEstimator(f.pose.adaptiveTrackingConfig)
+		val calibration: (Tracker, DriftResidual?, Long) -> Double? = { _, _, _ -> 0.0005 }
+		repeat(250) {
+			f.step()
+			estimator.update(f.pose.skeleton, f.time, calibration)
+		}
+		val before = f.leftArm.adaptiveYawBiasRadians
+		assertTrue(before > 0f)
+		f.step(Vector3(0.02f, 0f, 0f))
+		estimator.update(f.pose.skeleton, f.time, calibration)
+		val diagnostic = estimator.diagnostics.single { it.trackerId == f.leftArm.id }
+		assertTrue(diagnostic.holdoverActive)
+		assertTrue(f.leftArm.adaptiveYawBiasRadians > before)
 	}
 }
