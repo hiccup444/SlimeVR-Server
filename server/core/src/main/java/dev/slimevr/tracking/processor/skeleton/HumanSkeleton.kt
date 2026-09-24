@@ -1579,6 +1579,7 @@ class HumanSkeleton(
 
 	@JvmOverloads
 	fun resetTrackersFull(resetSourceName: String?, bodyParts: List<Int> = ArrayList()) {
+		humanPoseManager.multiPoseMounting.invalidateOnReset()
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
 		humanPoseManager.adaptiveMeasurementQuality.reset()
@@ -1617,6 +1618,7 @@ class HumanSkeleton(
 	@VRServerThread
 	@JvmOverloads
 	fun resetTrackersYaw(resetSourceName: String?, bodyParts: List<Int> = TrackerUtils.allBodyPartsButFingers) {
+		humanPoseManager.multiPoseMounting.invalidateOnReset()
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
 		humanPoseManager.adaptiveMeasurementQuality.reset()
@@ -1650,6 +1652,7 @@ class HumanSkeleton(
 	@VRServerThread
 	@JvmOverloads
 	fun resetTrackersMounting(resetSourceName: String?, bodyParts: List<Int>) {
+		humanPoseManager.multiPoseMounting.invalidateOnReset()
 		humanPoseManager.adaptiveEstimator.reset()
 		humanPoseManager.adaptivePoseSolver.reset()
 		humanPoseManager.adaptiveMeasurementQuality.reset()

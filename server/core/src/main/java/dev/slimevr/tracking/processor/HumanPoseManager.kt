@@ -42,6 +42,7 @@ class HumanPoseManager(val server: VRServer?) {
 	val adaptiveEstimator = AdaptiveBodyEstimator(adaptiveTrackingConfig)
 	val adaptivePoseSolver = AdaptivePoseSolver(adaptiveTrackingConfig)
 	val adaptiveArmCalibration = OpportunisticArmCalibration(this, adaptiveTrackingConfig)
+	val multiPoseMounting = MultiPoseMountingCalibration(this)
 	private val adaptiveJsonMapper = ObjectMapper()
 	fun adaptiveDiagnosticsJson(): String? {
 		if (adaptiveTrackingConfig.liveDiagnosticsEnabled && isSkeletonPresent && getPauseTracking()) {
@@ -302,6 +303,7 @@ class HumanPoseManager(val server: VRServer?) {
 	@VRServerThread
 	fun update() {
 		val now = System.nanoTime()
+		multiPoseMounting.update(now)
 		skeleton.updatePose(now)
 		if (server != null && (adaptiveTrackingConfig.telemetryEnabled || adaptiveTrackingConfig.liveDiagnosticsEnabled)) {
 			if (getPauseTracking()) {

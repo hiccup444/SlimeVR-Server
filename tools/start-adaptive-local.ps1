@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$packageDir = Join-Path $repoRoot 'gui\dist\artifacts\win\win-unpacked'
+$packageDir = Join-Path $repoRoot 'gui\dist\artifacts\win-refreshed\win-unpacked'
 $appExe = Join-Path $packageDir 'SlimeVR.exe'
 $requiredFiles = @(
 	$appExe,
@@ -17,6 +17,10 @@ foreach ($required in $requiredFiles) {
 	if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
 		throw "Portable Windows app file is missing: $required"
 	}
+}
+
+if (Test-Path -LiteralPath (Join-Path $packageDir 'config') -PathType Container) {
+	throw 'A portable config folder is present. Move it out of the package before launching with your usual tracker settings.'
 }
 
 function Test-LocalPort([int]$Port) {
@@ -35,9 +39,6 @@ if (Test-LocalPort 21110) {
 	throw 'Port 21110 is already in use. Stop its current process before starting the packaged server.'
 }
 
-# SlimeVR uses this directory as a portable-mode marker and keeps vrconfig.yml beside the app.
-New-Item -ItemType Directory -Force -Path (Join-Path $packageDir 'config') | Out-Null
-
 $originalJavaHome = $env:JAVA_HOME
 try {
 	if ($JavaHome) {
@@ -49,9 +50,9 @@ try {
 		$env:JAVA_HOME = $resolvedJavaHome
 	}
 
-	$process = Start-Process -FilePath $appExe -WorkingDirectory $packageDir -PassThru
-	Write-Host "Started portable SlimeVR from $packageDir (PID $($process.Id))."
-	Write-Host 'The package keeps its server settings in vrconfig.yml beside the app.'
+	$process = Start-Process -FilePath $appExe -WorkingDirectory $packageDir -WindowStyle Normal -PassThru
+	Write-Host "Started SlimeVR from $packageDir (PID $($process.Id))."
+	Write-Host 'The app uses the usual SlimeVR settings in your user profile.'
 } finally {
 	if ($JavaHome) { $env:JAVA_HOME = $originalJavaHome }
 }

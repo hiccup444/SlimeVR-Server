@@ -65,8 +65,16 @@ export function MountingChoose() {
                 </div>
                 <Button
                   variant="primary"
-                  to={'/onboarding/mounting/auto'}
+                  to="/onboarding/mounting/multi-pose"
                   className="self-start mt-auto"
+                  state={{ alonePage: state.alonePage }}
+                >
+                  Guided multi-pose calibration
+                </Button>
+                <Button
+                  variant="secondary"
+                  to={'/onboarding/mounting/auto'}
+                  className="self-start"
                   onClick={() => {
                     Sentry.metrics.count('mounting_choose', 1, {
                       attributes: { choose: 'auto' },

@@ -8,6 +8,8 @@ import dev.slimevr.protocol.rpc.RPCHandler
 import dev.slimevr.protocol.rpc.TransactionInfo
 import dev.slimevr.reset.ResetListener
 import solarxr_protocol.rpc.ClearMountingResetRequest
+import solarxr_protocol.rpc.MultiPoseMountingRequest
+import solarxr_protocol.rpc.MultiPoseMountingResponse
 import solarxr_protocol.rpc.ResetRequest
 import solarxr_protocol.rpc.ResetResponse
 import solarxr_protocol.rpc.ResetStatus
@@ -25,6 +27,21 @@ class RPCResetHandler(var rpcHandler: RPCHandler, var api: ProtocolAPI) : ResetL
 
 		rpcHandler.registerPacketListener(RpcMessage.ResetRequest, ::onResetRequest)
 		rpcHandler.registerPacketListener(RpcMessage.ClearMountingResetRequest, ::onClearMountingResetRequest)
+		rpcHandler.registerPacketListener(RpcMessage.MultiPoseMountingRequest, ::onMultiPoseMountingRequest)
+	}
+
+	fun onMultiPoseMountingRequest(conn: GenericConnection, messageHeader: RpcMessageHeader) {
+		val request = messageHeader.message(MultiPoseMountingRequest()) as? MultiPoseMountingRequest ?: return
+		val command = request.command() ?: "status"
+		api.server.queueTask {
+			val responseJson = api.server.humanPoseManager.multiPoseMounting.command(command)
+			val fbb = FlatBufferBuilder(512)
+			val payload = fbb.createString(responseJson)
+			val response = MultiPoseMountingResponse.createMultiPoseMountingResponse(fbb, payload)
+			val outbound = rpcHandler.createRPCMessage(fbb, RpcMessage.MultiPoseMountingResponse, response, messageHeader)
+			fbb.finish(outbound)
+			conn.send(fbb.dataBuffer())
+		}
 	}
 
 	fun onResetRequest(conn: GenericConnection, messageHeader: RpcMessageHeader) {

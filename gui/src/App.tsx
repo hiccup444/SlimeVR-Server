@@ -19,6 +19,7 @@ import { ConnectTrackersPage } from './components/onboarding/pages/ConnectTracke
 import { HomePage } from './components/onboarding/pages/Home';
 import { ErrorCollectingConsentPage } from './components/onboarding/pages/ErrorCollectingConsent';
 import { AutomaticMountingPage } from './components/onboarding/pages/mounting/AutomaticMounting';
+import { MultiPoseMountingPage } from './components/onboarding/pages/mounting/MultiPoseMounting';
 import { ManualMountingPage } from './components/onboarding/pages/mounting/ManualMounting';
 import { TrackersAssignPage } from './components/onboarding/pages/trackers-assign/TrackerAssignment';
 import { WifiCredsPage } from './components/onboarding/pages/WifiCreds';
@@ -170,6 +171,10 @@ function Layout() {
             <Route path="trackers-assign" element={<TrackersAssignPage />} />
             <Route path="mounting/choose" element={<MountingChoose />} />
             <Route path="mounting/auto" element={<AutomaticMountingPage />} />
+            <Route
+              path="mounting/multi-pose"
+              element={<MultiPoseMountingPage />}
+            />
             <Route path="mounting/manual" element={<ManualMountingPage />} />
             <Route
               path="body-proportions/auto"

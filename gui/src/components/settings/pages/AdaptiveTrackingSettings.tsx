@@ -722,6 +722,26 @@ export function AdaptiveTrackingSettings() {
     sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
   };
 
+  const setYawComparison = (enableYaw: boolean) => {
+    if (!isConnected) {
+      setSaveState('error');
+      return;
+    }
+    const adaptive = new AdaptiveTrackingSettingsPatchT();
+    adaptive.footAnchoringEnabled = AdaptiveBoolean.FALSE;
+    adaptive.yawCorrectionEnabled = enableYaw
+      ? AdaptiveBoolean.TRUE
+      : AdaptiveBoolean.FALSE;
+    adaptive.poseOptimizerEnabled = AdaptiveBoolean.FALSE;
+    adaptive.temperatureLearningEnabled = AdaptiveBoolean.FALSE;
+    adaptive.floorEstimationEnabled = AdaptiveBoolean.FALSE;
+    adaptive.armCalibrationMode = 'disabled';
+    const request = new ChangeSettingsRequestT();
+    request.adaptiveTracking = adaptive;
+    setSaveState('saving');
+    sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
+  };
+
   const setTestRecording = (record: boolean) => {
     if (!isConnected) {
       setSaveState('error');
@@ -761,6 +781,7 @@ export function AdaptiveTrackingSettings() {
             setSaveState('saving');
             sendRPCPacket(RpcMessage.ChangeSettingsRequest, request);
           }}
+          onSetYawComparison={setYawComparison}
           onStartRecording={() => setTestRecording(true)}
           onStopRecording={() => setTestRecording(false)}
         />

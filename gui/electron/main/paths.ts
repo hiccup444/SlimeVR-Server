@@ -72,10 +72,25 @@ const javaHomeBin = () => {
   return javaHomeJre;
 };
 
+const pathJavaBins = () => {
+  const pathValue = Object.entries(process.env).find(
+    ([key]) => key.toLowerCase() === 'path'
+  )?.[1];
+  const directories = pathValue?.split(path.delimiter).filter(Boolean) ?? [];
+  const direct = directories.filter(
+    (dir) => path.basename(dir).toLowerCase() !== 'javapath'
+  );
+  const launchers = directories.filter(
+    (dir) => path.basename(dir).toLowerCase() === 'javapath'
+  );
+  return [...direct, ...launchers].map((dir) => join(dir, javaBin));
+};
+
 export const findSystemJRE = async (sharedDir: string) => {
   const paths = [
     localJavaBin(sharedDir),
     javaHomeBin(),
+    ...pathJavaBins(),
     ...(await glob('/usr/lib/jvm/*/bin/' + javaBin)),
     ...(await glob('/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/' + javaBin)),
   ];

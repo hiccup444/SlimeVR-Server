@@ -201,7 +201,7 @@ class TrackerResetsHandler(val tracker: Tracker) {
 	 * mounting-reset-adjusted by applying quaternions produced after
 	 * full reset, yaw rest and mounting reset
 	 */
-	private fun adjustToReference(rotation: Quaternion): Quaternion {
+	private fun adjustToReference(rotation: Quaternion, mountingCandidate: Quaternion = mountRotFix): Quaternion {
 		var rot = rotation
 		// Align heading axis with bone space
 		if (!tracker.isHmd || tracker.trackerPosition != TrackerPosition.HEAD) {
@@ -214,7 +214,7 @@ class TrackerResetsHandler(val tracker: Tracker) {
 		// Secondary heading axis alignment with bone space for automatic mounting
 		// Note: Applying an inverse amount of heading correction corresponding to the
 		//  axis alignment quaternion will leave the correction to another variable
-		rot = mountRotFix.inv() * (rot * mountRotFix)
+		rot = mountingCandidate.inv() * (rot * mountingCandidate)
 		// More attitude axes alignment specifically for the t-pose configuration, this
 		//  probably shouldn't be a separate variable from attachmentFix?
 		rot *= tposeDownFix
@@ -223,6 +223,9 @@ class TrackerResetsHandler(val tracker: Tracker) {
 		rot = constraintFix * rot
 		return rot
 	}
+
+	fun previewReferenceRotation(rawRotation: Quaternion, mountingCandidate: Quaternion): Quaternion =
+		adjustToReference(rawRotation, mountingCandidate).unit()
 
 	/**
 	 * Converts raw or filtered rotation into zero-reference-adjusted by
@@ -407,10 +410,13 @@ class TrackerResetsHandler(val tracker: Tracker) {
 			return
 		}
 
-		constraintFix = Quaternion.IDENTITY
+		applyMountingCandidate(calculateMountingCandidate(reference, tracker.getRawRotation()), reference)
+	}
+
+	fun calculateMountingCandidate(reference: Quaternion, rawRotation: Quaternion): Quaternion {
 
 		// Get the current calibrated rotation
-		var rotBuf = adjustToDrift(tracker.getRawRotation() * mountingOrientation)
+		var rotBuf = adjustToDrift(rawRotation * mountingOrientation)
 		rotBuf = gyroFix * rotBuf
 		rotBuf *= attachmentFix
 		rotBuf = yawFix * rotBuf
@@ -449,7 +455,12 @@ class TrackerResetsHandler(val tracker: Tracker) {
 		}
 
 		// Make an adjustment quaternion from the angle
-		mountRotFix = EulerAngles(EulerOrder.YZX, 0f, yawAngle, 0f).toQuaternion()
+		return EulerAngles(EulerOrder.YZX, 0f, yawAngle, 0f).toQuaternion()
+	}
+
+	fun applyMountingCandidate(candidate: Quaternion, reference: Quaternion) {
+		constraintFix = Quaternion.IDENTITY
+		mountRotFix = candidate
 
 		// save mounting reset
 		if (saveMountingReset) tracker.saveMountingResetOrientation(mountRotFix)

@@ -41,6 +41,14 @@ const heading = (value: unknown) => {
 
 const scenarios = [
   {
+    id: 'guided-yaw',
+    name: 'Guided yaw comparison',
+    steps:
+      'Follow the on-screen instructions. Record the same short movement routine once with adaptive corrections off and once with only yaw correction on.',
+    expect:
+      'The feature-on run should avoid false corrections during movement. Compare repeated reference poses and manual reset counts afterward.',
+  },
+  {
     id: 'standing',
     name: 'Quiet standing',
     steps:
@@ -110,6 +118,39 @@ const scenarios = [
   },
 ] as const;
 
+const yawGuide = [
+  {
+    title: 'Hold a reference pose',
+    instruction:
+      'Stand on a chosen spot facing a fixed object in the room. Keep both feet planted and your arms relaxed for 30 seconds. Use this same spot, direction, and pose every time you return.',
+  },
+  {
+    title: 'Walk, then return',
+    instruction:
+      'Walk around normally for about 2 minutes. Return to your reference spot, face the same object, and hold the reference pose for 20 seconds.',
+  },
+  {
+    title: 'Turn, then return',
+    instruction:
+      'Make three full turns left and three full turns right at a comfortable pace. Return to the same direction and hold the reference pose for 20 seconds.',
+  },
+  {
+    title: 'Move slowly',
+    instruction:
+      'Slowly twist your torso left and right, then pivot each leg. Return to the reference pose for 20 seconds. Mark any body part that corrects in the wrong direction.',
+  },
+  {
+    title: 'Move normally',
+    instruction:
+      'Walk, turn, and change pose as you normally would for about 5 minutes. Mark every manual yaw reset, jump, or visible error. Then return to your reference spot.',
+  },
+  {
+    title: 'Hold the final reference pose',
+    instruction:
+      'Face the same object on the same spot and hold the same pose for 30 seconds. When finished, use the button below to stop and export this run.',
+  },
+] as const;
+
 type TestSession = {
   id: string;
   scenario: string;
@@ -126,6 +167,7 @@ export function AdaptiveDebugPanel({
   settings,
   activeFeatures,
   onEnable,
+  onSetYawComparison,
   onStartRecording,
   onStopRecording,
 }: {
@@ -135,6 +177,7 @@ export function AdaptiveDebugPanel({
   settings: unknown;
   activeFeatures: string[];
   onEnable: () => void;
+  onSetYawComparison: (enabled: boolean) => void;
   onStartRecording: () => void;
   onStopRecording: () => void;
 }) {
@@ -151,9 +194,14 @@ export function AdaptiveDebugPanel({
   const [clock, setClock] = useState(Date.now());
   const [note, setNote] = useState('');
   const [exportError, setExportError] = useState('');
-  const [scenarioId, setScenarioId] = useState<string>('standing');
+  const [scenarioId, setScenarioId] = useState<string>('guided-yaw');
   const [condition, setCondition] = useState('Baseline');
   const [trial, setTrial] = useState('1');
+  const [guideStep, setGuideStep] = useState(0);
+  const [guideStepStartedAt, setGuideStepStartedAt] = useState(Date.now());
+  const [completedGuideCondition, setCompletedGuideCondition] = useState<
+    string | null
+  >(null);
   const [session, setSession] = useState<TestSession | null>(null);
   const [stopping, setStopping] = useState(false);
   const sessionRef = useRef<TestSession | null>(null);
@@ -364,6 +412,8 @@ export function AdaptiveDebugPanel({
     previousRecordingFilesRef.current = new Set(recordingFiles);
     setSession(next);
     setStopping(false);
+    setGuideStep(0);
+    setGuideStepStartedAt(Date.now());
     append({ type: 'session-start', ...next, settings });
     onStartRecording();
   }
@@ -394,14 +444,20 @@ export function AdaptiveDebugPanel({
       sessionRecordingFiles.length > 0
         ? sessionRecordingFiles
         : lastRecordingFilesRef.current;
+    if (sessionRef.current?.scenario === 'guided-yaw') {
+      setCompletedGuideCondition(sessionRef.current.condition);
+      if (sessionRef.current.condition === 'Baseline')
+        setCondition('Feature on');
+    }
     sessionRef.current = null;
     download();
     setSession(null);
     setStopping(false);
   }, [frame, stopping, connected]);
 
-  function mark() {
-    const message = note.trim() || 'Visible tracking problem';
+  function mark(messageOverride?: string) {
+    const message =
+      messageOverride ?? (note.trim() || 'Visible tracking problem');
     const snapshotReceivedAt =
       lastFrame.current === frame ? lastFrameReceivedAt.current : null;
     if (frame && snapshotReceivedAt) {
@@ -428,6 +484,20 @@ export function AdaptiveDebugPanel({
       ].slice(0, 30)
     );
     setNote('');
+  }
+
+  function completeGuideStep() {
+    const current = yawGuide[guideStep];
+    if (!session || !current || !recordingActive) return;
+    mark(
+      `Guided step ${guideStep + 1}/${yawGuide.length} complete: ${current.title}`
+    );
+    if (guideStep === yawGuide.length - 1) {
+      stopSession();
+      return;
+    }
+    setGuideStep((step) => step + 1);
+    setGuideStepStartedAt(Date.now());
   }
 
   function download() {
@@ -486,6 +556,12 @@ export function AdaptiveDebugPanel({
   const solverMilliseconds = numeric(solver.processingNanos);
   const scenario =
     scenarios.find((item) => item.id === scenarioId) ?? scenarios[0];
+  const guidedYaw = scenarioId === 'guided-yaw';
+  const guideSettingsReady =
+    !guidedYaw ||
+    (condition === 'Baseline'
+      ? activeFeatures.length === 0
+      : activeFeatures.length === 1 && activeFeatures[0] === 'Yaw correction');
   return (
     <section
       className="flex flex-col gap-3 rounded-lg bg-background-60 p-4 text-background-10"
@@ -542,9 +618,96 @@ export function AdaptiveDebugPanel({
           />
         </label>
       </div>
-      <p className="text-sm">
-        Do: {scenario.steps} Expected: {scenario.expect}
-      </p>
+      {guidedYaw ? (
+        <div className="rounded-lg border border-primary bg-background-80 p-4">
+          {session ? (
+            <>
+              <p className="text-sm font-bold">
+                {session.condition} run · Step {guideStep + 1} of{' '}
+                {yawGuide.length}
+              </p>
+              <h3 className="mt-2 text-xl font-bold">
+                {yawGuide[guideStep].title}
+              </h3>
+              <p className="mt-2">{yawGuide[guideStep].instruction}</p>
+              <p className="mt-2 text-sm">
+                Time on this step:{' '}
+                {Math.floor((clock - guideStepStartedAt) / 1000)} seconds
+              </p>
+              <Button
+                variant="primary"
+                disabled={!recordingActive || stopping}
+                onClick={completeGuideStep}
+              >
+                {guideStep === yawGuide.length - 1
+                  ? 'Finish run and export notes'
+                  : 'Done · show next instruction'}
+              </Button>
+              <p className="mt-2 text-sm">
+                Use Mark this moment below whenever you reset yaw or notice a
+                problem.
+              </p>
+            </>
+          ) : completedGuideCondition === 'Feature on' ? (
+            <>
+              <h3 className="text-xl font-bold">Both runs complete</h3>
+              <p>
+                Keep both downloaded note logs and every server recording file
+                shown below. A fixed-view video of the repeated poses is helpful
+                too.
+              </p>
+              <Button
+                variant="secondary"
+                disabled={!connected || recordingRequested}
+                onClick={() => onSetYawComparison(false)}
+              >
+                Turn adaptive corrections off
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-bold">
+                {condition === 'Baseline' ? 'Run 1 of 2' : 'Run 2 of 2'}
+              </p>
+              <h3 className="mt-2 text-xl font-bold">
+                {condition === 'Baseline'
+                  ? 'Get ready for the baseline'
+                  : 'Get ready for yaw correction'}
+              </h3>
+              <p className="mt-2">
+                {condition === 'Baseline'
+                  ? 'Wake your trackers, start SteamVR, wear the headset and controllers, and do your normal mounting calibration and full reset. Choose a spot and a fixed object to face.'
+                  : 'Keep the same tracker mounting and test area. Do the same calibration and full reset. Then repeat the same six instructions.'}
+              </p>
+              <Button
+                variant="secondary"
+                disabled={!connected || settings === null || recordingRequested}
+                onClick={() => onSetYawComparison(condition === 'Feature on')}
+              >
+                {condition === 'Baseline'
+                  ? 'Apply baseline settings'
+                  : 'Apply yaw correction settings'}
+              </Button>
+              <p className="mt-2 text-sm">
+                This saves all adaptive corrections off for Baseline, or only
+                yaw correction on for Feature on. Your tracker mounting stays
+                unchanged.
+              </p>
+              <p className="mt-2 text-sm">
+                {guideSettingsReady
+                  ? 'Settings ready. '
+                  : 'Apply the settings above first. '}
+                Start the recording below when ready. The screen will show one
+                action at a time and mark each completed step in the log.
+              </p>
+            </>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm">
+          Do: {scenario.steps} Expected: {scenario.expect}
+        </p>
+      )}
       <p className="text-sm">
         The comparison label names the log. Choose and save correction settings
         below before a feature-on trial.
@@ -572,6 +735,13 @@ export function AdaptiveDebugPanel({
             Feature on is selected, but no adaptive feature is enabled yet.
           </p>
         )}
+      {guidedYaw && settings !== null && !guideSettingsReady && (
+        <p role="alert">
+          This guided comparison needs all adaptive corrections off for
+          Baseline, then only adaptive yaw correction on for Feature on. Save
+          the settings below before starting.
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="primary"
@@ -586,11 +756,14 @@ export function AdaptiveDebugPanel({
             !connected ||
             settings === null ||
             session !== null ||
-            recordingRequested
+            recordingRequested ||
+            !guideSettingsReady
           }
           onClick={startSession}
         >
-          Start recorded test
+          {guidedYaw
+            ? `Start ${condition.toLowerCase()} run`
+            : 'Start recorded test'}
         </Button>
         <Button
           variant="secondary"
@@ -669,7 +842,7 @@ export function AdaptiveDebugPanel({
         <Button
           variant="secondary"
           disabled={!enabled || !connected || stale}
-          onClick={mark}
+          onClick={() => mark()}
         >
           Mark this moment
         </Button>
